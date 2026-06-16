@@ -27,9 +27,13 @@ class LudoGameEngineTest {
 
         val rolled = engine.rollDice(initialState, forcedValue = 3)
 
-        assertTrue(rolled.canRoll)
+        assertFalse(rolled.canRoll)
         assertEquals(emptySet<Int>(), rolled.availablePieceIds)
-        assertEquals(LudoPlayerColor.Blue, rolled.currentTurn)
+        assertEquals(LudoPlayerColor.Yellow, rolled.currentTurn)
+
+        val skipped = engine.skipTurn(rolled)
+        assertTrue(skipped.canRoll)
+        assertEquals(LudoPlayerColor.Blue, skipped.currentTurn)
     }
 
     @Test
@@ -38,7 +42,7 @@ class LudoGameEngineTest {
         val pieces = initialState.pieces.map { piece ->
             when (piece.id) {
                 0 -> piece.copy(progress = 4)
-                4 -> piece.copy(progress = 45)
+                4 -> piece.copy(progress = 19)
                 else -> piece
             }
         }

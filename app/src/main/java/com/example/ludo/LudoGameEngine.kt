@@ -37,13 +37,11 @@ class LudoGameEngine(
         val availableMoves = movablePieceIds(state, state.currentTurn, dice)
 
         return if (availableMoves.isEmpty()) {
-            val nextTurn = nextTurnAfter(state, dice)
             state.copy(
-                currentTurn = nextTurn,
                 diceValue = dice,
-                canRoll = true,
+                canRoll = false,
                 availablePieceIds = emptySet(),
-                statusMessage = "النرد $dice ولا توجد حركة متاحة. الدور الآن لـ ${nextTurn.label}",
+                statusMessage = "النرد $dice ولا توجد حركة متاحة. انتظر انتهاء الوقت",
             )
         } else {
             state.copy(
@@ -181,7 +179,7 @@ class LudoGameEngine(
     }
 
     private fun absoluteTrackCell(owner: LudoPlayerColor, progress: Int): Int =
-        (owner.startCell + progress) % TRACK_CELL_COUNT
+        (owner.startCell - progress + TRACK_CELL_COUNT) % TRACK_CELL_COUNT
 
     private fun nextTurnAfter(state: LudoUiState, dice: Int): LudoPlayerColor {
         if (dice == 6) return state.currentTurn

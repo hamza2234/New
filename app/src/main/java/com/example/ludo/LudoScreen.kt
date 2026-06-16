@@ -85,14 +85,15 @@ fun LudoScreen(
     suspend fun playDiceRoll(snapshot: LudoUiState): LudoUiState {
         isDiceRolling = true
         moveCountdown = 0
-        repeat(16) { step ->
+        repeat(20) { step ->
             displayedDice = ((displayedDice + step) % 6) + 1
-            diceSpin += 58f
-            delay(48)
+            diceSpin += 28f
+            delay(95)
         }
         val rolled = engine.rollDice(snapshot)
         displayedDice = rolled.diceValue ?: displayedDice
-        diceSpin += 30f
+        diceSpin += 12f
+        delay(420)
         isDiceRolling = false
         return rolled
     }
@@ -112,10 +113,10 @@ fun LudoScreen(
         moveCountdown = 0
         visualSteps.forEachIndexed { index, progress ->
             visualProgressOverrides[pieceId] = progress
-            delay(if (index == 0 && piece.progress == HOME_PROGRESS) 260 else 145)
+            delay(if (index == 0 && piece.progress == HOME_PROGRESS) 520 else 310)
         }
         val moved = engine.movePiece(snapshot, pieceId)
-        delay(80)
+        delay(160)
         visualProgressOverrides.remove(pieceId)
         isPieceAnimating = false
         return moved
@@ -123,15 +124,9 @@ fun LudoScreen(
 
     LaunchedEffect(matchStarted, state.currentTurn, state.canRoll, state.availablePieceIds, state.winner) {
         val snapshot = state
-        if (matchStarted && snapshot.winner == null && snapshot.currentPlayer.isBot) {
-            delay(if (snapshot.canRoll) 560 else 430)
-            state = if (snapshot.canRoll) {
-                playDiceRoll(snapshot)
-            } else {
-                engine.chooseBotPiece(snapshot)?.let { pieceId ->
-                    playPieceMove(snapshot, pieceId)
-                } ?: snapshot
-            }
+        if (matchStarted && snapshot.winner == null && snapshot.currentPlayer.isBot && snapshot.canRoll) {
+            delay(1_100)
+            state = playDiceRoll(snapshot)
         }
     }
 
@@ -147,18 +142,26 @@ fun LudoScreen(
         val shouldCountDown = matchStarted &&
             state.winner == null &&
             !state.canRoll &&
-            state.availablePieceIds.isNotEmpty() &&
-            !state.currentPlayer.isBot &&
             !isDiceRolling &&
             !isPieceAnimating
 
         if (shouldCountDown) {
-            for (remaining in 5 downTo 1) {
+            for (remaining in 10 downTo 1) {
                 moveCountdown = remaining
                 delay(1_000)
             }
             moveCountdown = 0
-            state = engine.skipTurn(state)
+            val snapshot = state
+            state = if (snapshot.currentPlayer.isBot && snapshot.availablePieceIds.isNotEmpty()) {
+                engine.chooseBotPiece(snapshot)?.let { pieceId ->
+                    scope.launch {
+                        state = playPieceMove(snapshot, pieceId)
+                    }
+                    snapshot
+                } ?: engine.skipTurn(snapshot)
+            } else {
+                engine.skipTurn(snapshot)
+            }
         } else {
             moveCountdown = 0
         }
@@ -175,7 +178,7 @@ fun LudoScreen(
                 moveCountdown = moveCountdown,
                 visualProgressOverrides = visualProgressOverrides,
                 onRollDice = {
-                    if (!isDiceRolling && !isPieceAnimating) {
+                    if (!isDiceRolling && !isPieceAnimating && state.canRoll) {
                         val snapshot = state
                         scope.launch {
                             state = playDiceRoll(snapshot)
@@ -545,7 +548,7 @@ private fun GameTableScreen(
             onPieceClick = onPieceClick,
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f, fill = false),
+                .weight(1f, fill = true),
         )
         Spacer(modifier = Modifier.height(8.dp))
         BottomPlayersRow(
@@ -561,8 +564,6 @@ private fun GameTableScreen(
             state = state,
             onPieceClick = onPieceClick,
         )
-        Spacer(modifier = Modifier.height(10.dp))
-        QuickActionsBar()
     }
 }
 
@@ -1354,7 +1355,7 @@ private object LudoBoardLayout {
         val grid = when {
             piece.progress == HOME_PROGRESS -> homeYards.getValue(piece.owner)[piece.id % PIECES_PER_PLAYER]
             piece.progress in FIRST_TRACK_PROGRESS..LAST_TRACK_PROGRESS -> {
-                val absoluteIndex = (piece.owner.startCell + piece.progress) % trackCells.size
+                val absoluteIndex = (piece.owner.startCell - piece.progress + trackCells.size) % trackCells.size
                 trackCells[absoluteIndex]
             }
             else -> {
