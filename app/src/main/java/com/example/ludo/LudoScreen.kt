@@ -85,6 +85,7 @@ fun LudoScreen(
     var moveCountdown by remember { mutableIntStateOf(0) }
     var isPieceAnimating by remember { mutableStateOf(false) }
     val visualProgressOverrides = remember { mutableStateMapOf<Int, Int>() }
+    val visualPointOverrides = remember { mutableStateMapOf<Int, BoardPoint>() }
 
     suspend fun playDiceRoll(snapshot: LudoUiState, fast: Boolean = false): LudoUiState {
         isDiceRolling = true
@@ -108,7 +109,7 @@ fun LudoScreen(
     suspend fun rollAndResolve(snapshot: LudoUiState, fast: Boolean = false): LudoUiState {
         val rolled = playDiceRoll(snapshot, fast = fast)
         return if (!rolled.canRoll && rolled.availablePieceIds.isEmpty() && rolled.winner == null) {
-            delay(if (fast) 180 else 850)
+            delay(2_000)
             engine.skipTurn(rolled)
         } else {
             rolled
@@ -120,21 +121,28 @@ fun LudoScreen(
         val dice = snapshot.diceValue ?: return snapshot
         val piece = snapshot.pieces.firstOrNull { it.id == pieceId } ?: return snapshot
         val target = engine.targetProgressFor(piece, dice) ?: return snapshot
-        val visualSteps = when {
+        val progressSteps = when {
             piece.progress == HOME_PROGRESS -> listOf(FIRST_TRACK_PROGRESS)
             target > piece.progress -> ((piece.progress + 1)..target).toList()
             else -> listOf(target)
+        }
+        val visualSteps = if (piece.progress == HOME_PROGRESS) {
+            listOf(LudoBoardLayout.doorPoint(piece.owner)) +
+                progressSteps.map { progress -> LudoBoardLayout.pointFor(piece.owner, progress) }
+        } else {
+            progressSteps.map { progress -> LudoBoardLayout.pointFor(piece.owner, progress) }
         }
 
         isPieceAnimating = true
         rollCountdown = 0
         moveCountdown = 0
-        visualSteps.forEachIndexed { index, progress ->
-            visualProgressOverrides[pieceId] = progress
-            delay(if (index == 0 && piece.progress == HOME_PROGRESS) 520 else 310)
+        visualSteps.forEachIndexed { index, point ->
+            visualPointOverrides[pieceId] = point
+            delay(if (index == 0 && piece.progress == HOME_PROGRESS) 360 else 300)
         }
         val moved = engine.movePiece(snapshot, pieceId)
         delay(160)
+        visualPointOverrides.remove(pieceId)
         visualProgressOverrides.remove(pieceId)
         isPieceAnimating = false
         return moved
@@ -238,6 +246,7 @@ fun LudoScreen(
                 rollCountdown = rollCountdown,
                 moveCountdown = moveCountdown,
                 visualProgressOverrides = visualProgressOverrides,
+                visualPointOverrides = visualPointOverrides,
                 onRollDice = {
                     if (!isDiceRolling && !isPieceAnimating && state.canRoll) {
                         val snapshot = state
@@ -256,6 +265,7 @@ fun LudoScreen(
                 },
                 onReset = {
                     visualProgressOverrides.clear()
+                    visualPointOverrides.clear()
                     rollCountdown = 0
                     moveCountdown = 0
                     state = engine.reset(selectedMode)
@@ -273,6 +283,7 @@ fun LudoScreen(
                 onStakeChanged = { stake = it.coerceIn(100, 100_000) },
                 onStart = {
                     visualProgressOverrides.clear()
+                    visualPointOverrides.clear()
                     rollCountdown = 0
                     moveCountdown = 0
                     state = engine.reset(selectedMode)
@@ -585,6 +596,7 @@ private fun GameTableScreen(
     rollCountdown: Int,
     moveCountdown: Int,
     visualProgressOverrides: Map<Int, Int>,
+    visualPointOverrides: Map<Int, BoardPoint>,
     onRollDice: () -> Unit,
     onPieceClick: (Int) -> Unit,
     onReset: () -> Unit,
@@ -611,6 +623,7 @@ private fun GameTableScreen(
         LudoBoardStage(
             state = state,
             visualProgressOverrides = visualProgressOverrides,
+            visualPointOverrides = visualPointOverrides,
             onPieceClick = onPieceClick,
             modifier = Modifier
                 .fillMaxWidth()
@@ -1021,6 +1034,7 @@ private fun CountdownClock(
 private fun LudoBoardStage(
     state: LudoUiState,
     visualProgressOverrides: Map<Int, Int>,
+    visualPointOverrides: Map<Int, BoardPoint>,
     onPieceClick: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1047,6 +1061,7 @@ private fun LudoBoardStage(
                 LudoBoard(
                     state = state,
                     visualProgressOverrides = visualProgressOverrides,
+                    visualPointOverrides = visualPointOverrides,
                     onPieceClick = onPieceClick,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -1059,6 +1074,7 @@ private fun LudoBoardStage(
 private fun LudoBoard(
     state: LudoUiState,
     visualProgressOverrides: Map<Int, Int>,
+    visualPointOverrides: Map<Int, BoardPoint>,
     onPieceClick: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1074,7 +1090,7 @@ private fun LudoBoard(
         }
         val pieceTargets = remember(visualPieces) {
             visualPieces.associate { piece -> piece.id to LudoBoardLayout.cellForPiece(piece) }
-        }
+        } + visualPointOverrides
         val occupied = pieceTargets.entries.groupBy { it.value.occupancyKey }
 
         Box(modifier = Modifier.size(boardSize)) {
@@ -1425,6 +1441,24 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPremiumBoard() 
         }
     }
 
+    LudoBoardLayout.doorPoints.forEach { (color, point) ->
+        drawRoundRect(
+            brush = Brush.verticalGradient(
+                listOf(Color.White.copy(alpha = 0.95f), color.toColor().copy(alpha = 0.92f)),
+            ),
+            topLeft = Offset((point.centerX - 0.36f) * cell, (point.centerY - 0.36f) * cell),
+            size = Size(cell * 0.72f, cell * 0.72f),
+            cornerRadius = CornerRadius(cell * 0.16f),
+        )
+        drawRoundRect(
+            color = Color.Black.copy(alpha = 0.28f),
+            topLeft = Offset((point.centerX - 0.36f) * cell, (point.centerY - 0.36f) * cell),
+            size = Size(cell * 0.72f, cell * 0.72f),
+            cornerRadius = CornerRadius(cell * 0.16f),
+            style = Stroke(cell * 0.04f),
+        )
+    }
+
     drawTriangleCenter(cell, LudoPlayerColor.Red.toColor(), top = true)
     drawTriangleCenter(cell, LudoPlayerColor.Green.toColor(), left = true)
     drawTriangleCenter(cell, LudoPlayerColor.Yellow.toColor(), bottom = true)
@@ -1562,20 +1596,41 @@ private object LudoBoardLayout {
         HomeBlock(LudoPlayerColor.Green, 9, 9),
     )
 
+    val doorPoints = mapOf(
+        LudoPlayerColor.Yellow to BoardPoint(5.72f, 13.5f),
+        LudoPlayerColor.Blue to BoardPoint(1.5f, 5.72f),
+        LudoPlayerColor.Red to BoardPoint(9.28f, 1.5f),
+        LudoPlayerColor.Green to BoardPoint(13.5f, 9.28f),
+    )
+
     val starCells = setOf(2, 8, 15, 21, 28, 34, 41, 47)
 
-    fun cellForPiece(piece: LudoPiece): BoardPoint {
+    fun doorPoint(color: LudoPlayerColor): BoardPoint =
+        doorPoints.getValue(color)
+
+    fun pointFor(owner: LudoPlayerColor, progress: Int): BoardPoint {
         val grid = when {
-            piece.progress == HOME_PROGRESS -> homeYards.getValue(piece.owner)[piece.id % PIECES_PER_PLAYER]
-            piece.progress in FIRST_TRACK_PROGRESS..LAST_TRACK_PROGRESS -> {
-                val absoluteIndex = (piece.owner.startCell + piece.progress) % trackCells.size
+            progress in FIRST_TRACK_PROGRESS..LAST_TRACK_PROGRESS -> {
+                val absoluteIndex = (owner.startCell + progress) % trackCells.size
                 trackCells[absoluteIndex]
             }
-            else -> {
-                val laneIndex = (piece.progress - FIRST_HOME_LANE_PROGRESS).coerceIn(0, PIECES_PER_PLAYER + 1)
-                homeLanes.getValue(piece.owner)[laneIndex]
+            progress >= FIRST_HOME_LANE_PROGRESS -> {
+                val laneIndex = (progress - FIRST_HOME_LANE_PROGRESS).coerceIn(0, PIECES_PER_PLAYER + 1)
+                homeLanes.getValue(owner)[laneIndex]
             }
+            else -> return doorPoint(owner)
         }
+        return BoardPoint(
+            centerX = grid.col + 0.5f,
+            centerY = grid.row + 0.5f,
+        )
+    }
+
+    fun cellForPiece(piece: LudoPiece): BoardPoint {
+        if (piece.progress != HOME_PROGRESS) {
+            return pointFor(piece.owner, piece.progress)
+        }
+        val grid = homeYards.getValue(piece.owner)[piece.id % PIECES_PER_PLAYER]
         return BoardPoint(
             centerX = grid.col + 0.5f,
             centerY = grid.row + 0.5f,
