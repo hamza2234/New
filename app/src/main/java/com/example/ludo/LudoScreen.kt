@@ -605,11 +605,11 @@ private fun GameTableScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 8.dp, vertical = 10.dp),
+            .padding(horizontal = 3.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         GameTopBar(stake = stake, onExit = onExit, onReset = onReset)
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(6.dp))
         TopPlayersRow(
             state = state,
             displayedDice = displayedDice,
@@ -619,7 +619,7 @@ private fun GameTableScreen(
             moveCountdown = moveCountdown,
             onRollDice = onRollDice,
         )
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
         LudoBoardStage(
             state = state,
             visualProgressOverrides = visualProgressOverrides,
@@ -629,7 +629,7 @@ private fun GameTableScreen(
                 .fillMaxWidth()
                 .weight(1f, fill = true),
         )
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
         BottomPlayersRow(
             state = state,
             displayedDice = displayedDice,
@@ -639,7 +639,7 @@ private fun GameTableScreen(
             moveCountdown = moveCountdown,
             onRollDice = onRollDice,
         )
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
         MoveStatusBar(
             state = state,
             onPieceClick = onPieceClick,
@@ -1049,14 +1049,14 @@ private fun LudoBoardStage(
                 .shadow(18.dp, RoundedCornerShape(18.dp))
                 .clip(RoundedCornerShape(18.dp))
                 .background(Brush.verticalGradient(listOf(Color(0xFF8A4E2A), Color(0xFF462B21))))
-                .padding(7.dp),
+                .padding(4.dp),
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(RoundedCornerShape(13.dp))
                     .background(Color(0xFF281D33))
-                    .padding(2.dp),
+                    .padding(1.dp),
             ) {
                 LudoBoard(
                     state = state,
@@ -1460,10 +1460,10 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPremiumBoard() 
         )
     }
 
-    drawTriangleCenter(cell, LudoPlayerColor.Red.toColor(), top = true)
-    drawTriangleCenter(cell, LudoPlayerColor.Blue.toColor(), left = true)
-    drawTriangleCenter(cell, LudoPlayerColor.Yellow.toColor(), bottom = true)
-    drawTriangleCenter(cell, LudoPlayerColor.Green.toColor(), right = true)
+    drawTriangleCenter(cell, LudoPlayerColor.Blue.toColor(), top = true)
+    drawTriangleCenter(cell, LudoPlayerColor.Yellow.toColor(), left = true)
+    drawTriangleCenter(cell, LudoPlayerColor.Green.toColor(), bottom = true)
+    drawTriangleCenter(cell, LudoPlayerColor.Red.toColor(), right = true)
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBoardCell(
@@ -1569,17 +1569,17 @@ private object LudoBoardLayout {
     )
 
     val homeLanes = mapOf(
-        LudoPlayerColor.Yellow to listOf(
-            GridCell(7, 13), GridCell(7, 12), GridCell(7, 11), GridCell(7, 10), GridCell(7, 9), GridCell(7, 8),
-        ),
         LudoPlayerColor.Blue to listOf(
-            GridCell(1, 7), GridCell(2, 7), GridCell(3, 7), GridCell(4, 7), GridCell(5, 7), GridCell(6, 7),
-        ),
-        LudoPlayerColor.Red to listOf(
             GridCell(7, 1), GridCell(7, 2), GridCell(7, 3), GridCell(7, 4), GridCell(7, 5), GridCell(7, 6),
         ),
-        LudoPlayerColor.Green to listOf(
+        LudoPlayerColor.Red to listOf(
             GridCell(13, 7), GridCell(12, 7), GridCell(11, 7), GridCell(10, 7), GridCell(9, 7), GridCell(8, 7),
+        ),
+        LudoPlayerColor.Green to listOf(
+            GridCell(7, 13), GridCell(7, 12), GridCell(7, 11), GridCell(7, 10), GridCell(7, 9), GridCell(7, 8),
+        ),
+        LudoPlayerColor.Yellow to listOf(
+            GridCell(1, 7), GridCell(2, 7), GridCell(3, 7), GridCell(4, 7), GridCell(5, 7), GridCell(6, 7),
         ),
     )
 
@@ -1598,13 +1598,13 @@ private object LudoBoardLayout {
     )
 
     val doorPoints = mapOf(
-        LudoPlayerColor.Yellow to BoardPoint(6.5f, 13.5f),
-        LudoPlayerColor.Blue to BoardPoint(1.5f, 6.5f),
-        LudoPlayerColor.Red to BoardPoint(8.5f, 1.5f),
-        LudoPlayerColor.Green to BoardPoint(13.5f, 8.5f),
+        LudoPlayerColor.Blue to BoardPoint(6.5f, 1.5f),
+        LudoPlayerColor.Red to BoardPoint(13.5f, 6.5f),
+        LudoPlayerColor.Green to BoardPoint(8.5f, 13.5f),
+        LudoPlayerColor.Yellow to BoardPoint(1.5f, 8.5f),
     )
 
-    val starCells = setOf(2, 8, 15, 21, 28, 34, 41, 47)
+    val starCells = setOf(1, 9, 14, 22, 27, 35, 40, 47)
 
     fun doorPoint(color: LudoPlayerColor): BoardPoint =
         doorPoints.getValue(color)

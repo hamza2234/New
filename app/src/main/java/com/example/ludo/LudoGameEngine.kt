@@ -213,6 +213,6 @@ class LudoGameEngine(
     private companion object {
         const val TRACK_CELL_COUNT = 52
         const val MAX_ROLLS_WITHOUT_SIX = 6
-        val SAFE_TRACK_CELLS = setOf(0, 8, 13, 21, 26, 34, 39, 47)
+        val SAFE_TRACK_CELLS = setOf(1, 9, 14, 22, 27, 35, 40, 47)
     }
 }
