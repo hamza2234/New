@@ -18,7 +18,7 @@ class LudoGameEngineTest {
         assertFalse(rolled.canRoll)
         assertEquals(setOf(0, 1, 2, 3), rolled.availablePieceIds)
         assertEquals(FIRST_TRACK_PROGRESS, moved.pieces.first { it.id == 0 }.progress)
-        assertEquals(LudoPlayerColor.Red, moved.currentTurn)
+        assertEquals(LudoPlayerColor.Yellow, moved.currentTurn)
     }
 
     @Test
@@ -29,7 +29,7 @@ class LudoGameEngineTest {
 
         assertTrue(rolled.canRoll)
         assertEquals(emptySet<Int>(), rolled.availablePieceIds)
-        assertEquals(LudoPlayerColor.Green, rolled.currentTurn)
+        assertEquals(LudoPlayerColor.Blue, rolled.currentTurn)
     }
 
     @Test
@@ -44,7 +44,7 @@ class LudoGameEngineTest {
         }
         val readyToMove = initialState.copy(
             pieces = pieces,
-            currentTurn = LudoPlayerColor.Red,
+            currentTurn = LudoPlayerColor.Yellow,
             diceValue = 2,
             canRoll = false,
             availablePieceIds = setOf(0),
