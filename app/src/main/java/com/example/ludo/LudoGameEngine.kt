@@ -5,7 +5,10 @@ import kotlin.random.Random
 class LudoGameEngine(
     private val random: Random = Random.Default,
 ) {
+    private var rollsSinceSix = 0
+
     fun newGame(mode: LudoGameMode): LudoUiState {
+        rollsSinceSix = 0
         val players = LudoPlayerColor.entries.mapIndexed { index, color ->
             LudoPlayer(
                 color = color,
@@ -33,7 +36,7 @@ class LudoGameEngine(
     fun rollDice(state: LudoUiState, forcedValue: Int? = null): LudoUiState {
         if (!state.canRoll || state.winner != null) return state
 
-        val dice = forcedValue?.coerceIn(1, 6) ?: random.nextInt(from = 1, until = 7)
+        val dice = forcedValue?.coerceIn(1, 6) ?: nextFairDice()
         val availableMoves = movablePieceIds(state, state.currentTurn, dice)
 
         return if (availableMoves.isEmpty()) {
@@ -119,6 +122,17 @@ class LudoGameEngine(
 
     fun reset(mode: LudoGameMode): LudoUiState = newGame(mode)
 
+    private fun nextFairDice(): Int {
+        val dice = if (rollsSinceSix >= MAX_ROLLS_WITHOUT_SIX) {
+            6
+        } else {
+            random.nextInt(from = 1, until = 7)
+        }
+
+        rollsSinceSix = if (dice == 6) 0 else rollsSinceSix + 1
+        return dice
+    }
+
     fun chooseBotPiece(state: LudoUiState): Int? {
         val dice = state.diceValue ?: return null
         return state.availablePieceIds
@@ -179,7 +193,7 @@ class LudoGameEngine(
     }
 
     private fun absoluteTrackCell(owner: LudoPlayerColor, progress: Int): Int =
-        (owner.startCell - progress + TRACK_CELL_COUNT) % TRACK_CELL_COUNT
+        (owner.startCell + progress) % TRACK_CELL_COUNT
 
     private fun nextTurnAfter(state: LudoUiState, dice: Int): LudoPlayerColor {
         if (dice == 6) return state.currentTurn
@@ -198,6 +212,7 @@ class LudoGameEngine(
 
     private companion object {
         const val TRACK_CELL_COUNT = 52
+        const val MAX_ROLLS_WITHOUT_SIX = 6
         val SAFE_TRACK_CELLS = setOf(0, 8, 13, 21, 26, 34, 39, 47)
     }
 }

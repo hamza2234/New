@@ -42,7 +42,7 @@ class LudoGameEngineTest {
         val pieces = initialState.pieces.map { piece ->
             when (piece.id) {
                 0 -> piece.copy(progress = 4)
-                4 -> piece.copy(progress = 19)
+                4 -> piece.copy(progress = 45)
                 else -> piece
             }
         }

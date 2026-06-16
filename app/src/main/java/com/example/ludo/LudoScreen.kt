@@ -2,9 +2,12 @@ package com.example.ludo
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -83,27 +86,29 @@ fun LudoScreen(
     var isPieceAnimating by remember { mutableStateOf(false) }
     val visualProgressOverrides = remember { mutableStateMapOf<Int, Int>() }
 
-    suspend fun playDiceRoll(snapshot: LudoUiState): LudoUiState {
+    suspend fun playDiceRoll(snapshot: LudoUiState, fast: Boolean = false): LudoUiState {
         isDiceRolling = true
         rollCountdown = 0
         moveCountdown = 0
-        repeat(20) { step ->
+        val steps = if (fast) 8 else 18
+        val delayMs = if (fast) 42L else 82L
+        repeat(steps) { step ->
             displayedDice = ((displayedDice + step) % 6) + 1
-            diceSpin += 28f
-            delay(95)
+            diceSpin += 42f
+            delay(delayMs)
         }
         val rolled = engine.rollDice(snapshot)
         displayedDice = rolled.diceValue ?: displayedDice
         diceSpin += 12f
-        delay(420)
+        delay(if (fast) 160 else 420)
         isDiceRolling = false
         return rolled
     }
 
-    suspend fun rollAndResolve(snapshot: LudoUiState): LudoUiState {
-        val rolled = playDiceRoll(snapshot)
+    suspend fun rollAndResolve(snapshot: LudoUiState, fast: Boolean = false): LudoUiState {
+        val rolled = playDiceRoll(snapshot, fast = fast)
         return if (!rolled.canRoll && rolled.availablePieceIds.isEmpty() && rolled.winner == null) {
-            delay(850)
+            delay(if (fast) 180 else 850)
             engine.skipTurn(rolled)
         } else {
             rolled
@@ -138,8 +143,8 @@ fun LudoScreen(
     LaunchedEffect(matchStarted, state.currentTurn, state.canRoll, state.availablePieceIds, state.winner) {
         val snapshot = state
         if (matchStarted && snapshot.winner == null && snapshot.currentPlayer.isBot && snapshot.canRoll) {
-            delay(1_100)
-            state = rollAndResolve(snapshot)
+            delay(120)
+            state = rollAndResolve(snapshot, fast = true)
         }
     }
 
@@ -191,7 +196,7 @@ fun LudoScreen(
         if (shouldMove) {
             rollCountdown = 0
             if (state.currentPlayer.isBot) {
-                delay(1_050)
+                delay(90)
                 val snapshot = state
                 val pieceId = engine.chooseBotPiece(snapshot) ?: snapshot.availablePieceIds.minOrNull()
                 state = pieceId?.let { playPieceMove(snapshot, it) } ?: engine.skipTurn(snapshot)
@@ -771,7 +776,7 @@ private fun PlayerSeat(
             if (alignEnd) {
                 SeatDiceTimer(
                     isActive = isTurn,
-                    displayedDice = displayedDice,
+                    displayedDice = if (isTurn) displayedDice else 1,
                     diceSpin = diceSpin,
                     isDiceRolling = isDiceRolling && isTurn,
                     countdown = if (isTurn) rollCountdown.takeIf { it > 0 } ?: moveCountdown else 0,
@@ -798,7 +803,7 @@ private fun PlayerSeat(
             if (!alignEnd) {
                 SeatDiceTimer(
                     isActive = isTurn,
-                    displayedDice = displayedDice,
+                    displayedDice = if (isTurn) displayedDice else 1,
                     diceSpin = diceSpin,
                     isDiceRolling = isDiceRolling && isTurn,
                     countdown = if (isTurn) rollCountdown.takeIf { it > 0 } ?: moveCountdown else 0,
@@ -828,13 +833,21 @@ private fun SeatDiceTimer(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
+    val animatedSpin by animateFloatAsState(
+        targetValue = if (isDiceRolling) diceSpin else 0f,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+        label = "seat-dice-spin",
+    )
     Box(
         modifier = Modifier
             .size(if (isActive) 54.dp else 36.dp)
             .shadow(if (isActive) 12.dp else 4.dp, RoundedCornerShape(12.dp))
             .graphicsLayer(
-                rotationZ = if (isDiceRolling) diceSpin else 0f,
-                rotationY = if (isDiceRolling) diceSpin % 55f else 0f,
+                rotationZ = animatedSpin,
+                rotationY = animatedSpin % 42f,
+                rotationX = (animatedSpin * 0.45f) % 28f,
+                scaleX = if (isDiceRolling) 1.04f else 1f,
+                scaleY = if (isDiceRolling) 1.04f else 1f,
             )
             .clip(RoundedCornerShape(12.dp))
             .clickable(enabled = enabled, onClick = onClick),
@@ -865,11 +878,11 @@ private fun DiceFace(
         val corner = size.minDimension * 0.22f
         drawRoundRect(
             brush = Brush.linearGradient(
-                colors = if (active) {
-                    listOf(Color(0xFFFFE38A), Color(0xFFC77725), Color(0xFF6E3513))
-                } else {
-                    listOf(Color(0xFFB5B6C2), Color(0xFF626577), Color(0xFF343747))
-                },
+                colors = listOf(
+                    Color.White,
+                    if (active) Color(0xFFF3F6FF) else Color(0xFFE8EAF2),
+                    if (active) Color(0xFFC7CCD8) else Color(0xFFA5AAB8),
+                ),
                 start = Offset(0f, 0f),
                 end = Offset(size.width, size.height),
             ),
@@ -877,19 +890,25 @@ private fun DiceFace(
             cornerRadius = CornerRadius(corner, corner),
         )
         drawRoundRect(
-            color = Color.White.copy(alpha = if (active) 0.45f else 0.22f),
+            color = Color.White.copy(alpha = if (active) 0.86f else 0.56f),
             topLeft = Offset(size.width * 0.1f, size.height * 0.08f),
             size = Size(size.width * 0.45f, size.height * 0.18f),
             cornerRadius = CornerRadius(corner * 0.6f, corner * 0.6f),
         )
         drawRoundRect(
-            color = Color.Black.copy(alpha = 0.24f),
+            color = Color.Black.copy(alpha = 0.14f),
+            topLeft = Offset(size.width * 0.12f, size.height * 0.82f),
+            size = Size(size.width * 0.76f, size.height * 0.08f),
+            cornerRadius = CornerRadius(corner * 0.4f, corner * 0.4f),
+        )
+        drawRoundRect(
+            color = if (active) Color(0xFFFFD54F).copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.18f),
             size = size,
             cornerRadius = CornerRadius(corner, corner),
             style = Stroke(width = size.minDimension * 0.045f),
         )
 
-        val pipColor = if (active) Color(0xFF5C2808) else Color(0xFF252938)
+        val pipColor = Color(0xFF111827)
         val pipRadius = size.minDimension * 0.07f
         val left = size.width * 0.29f
         val middle = size.width * 0.5f
@@ -899,8 +918,9 @@ private fun DiceFace(
         val bottom = size.height * 0.71f
 
         fun pip(x: Float, y: Float) {
-            drawCircle(Color.White.copy(alpha = 0.34f), pipRadius * 1.18f, Offset(x - pipRadius * 0.2f, y - pipRadius * 0.2f))
+            drawCircle(Color.Black.copy(alpha = 0.12f), pipRadius * 1.28f, Offset(x + pipRadius * 0.16f, y + pipRadius * 0.16f))
             drawCircle(pipColor, pipRadius, Offset(x, y))
+            drawCircle(Color.White.copy(alpha = 0.25f), pipRadius * 0.32f, Offset(x - pipRadius * 0.28f, y - pipRadius * 0.28f))
         }
 
         when (value.coerceIn(1, 6)) {
@@ -1537,7 +1557,7 @@ private object LudoBoardLayout {
         val grid = when {
             piece.progress == HOME_PROGRESS -> homeYards.getValue(piece.owner)[piece.id % PIECES_PER_PLAYER]
             piece.progress in FIRST_TRACK_PROGRESS..LAST_TRACK_PROGRESS -> {
-                val absoluteIndex = (piece.owner.startCell - piece.progress + trackCells.size) % trackCells.size
+                val absoluteIndex = (piece.owner.startCell + piece.progress) % trackCells.size
                 trackCells[absoluteIndex]
             }
             else -> {
