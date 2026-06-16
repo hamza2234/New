@@ -1461,9 +1461,9 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPremiumBoard() 
     }
 
     drawTriangleCenter(cell, LudoPlayerColor.Red.toColor(), top = true)
-    drawTriangleCenter(cell, LudoPlayerColor.Green.toColor(), left = true)
+    drawTriangleCenter(cell, LudoPlayerColor.Blue.toColor(), left = true)
     drawTriangleCenter(cell, LudoPlayerColor.Yellow.toColor(), bottom = true)
-    drawTriangleCenter(cell, LudoPlayerColor.Blue.toColor(), right = true)
+    drawTriangleCenter(cell, LudoPlayerColor.Green.toColor(), right = true)
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBoardCell(
@@ -1569,16 +1569,16 @@ private object LudoBoardLayout {
     )
 
     val homeLanes = mapOf(
-        LudoPlayerColor.Red to listOf(
+        LudoPlayerColor.Yellow to listOf(
             GridCell(7, 13), GridCell(7, 12), GridCell(7, 11), GridCell(7, 10), GridCell(7, 9), GridCell(7, 8),
         ),
-        LudoPlayerColor.Green to listOf(
+        LudoPlayerColor.Blue to listOf(
             GridCell(1, 7), GridCell(2, 7), GridCell(3, 7), GridCell(4, 7), GridCell(5, 7), GridCell(6, 7),
         ),
-        LudoPlayerColor.Yellow to listOf(
+        LudoPlayerColor.Red to listOf(
             GridCell(7, 1), GridCell(7, 2), GridCell(7, 3), GridCell(7, 4), GridCell(7, 5), GridCell(7, 6),
         ),
-        LudoPlayerColor.Blue to listOf(
+        LudoPlayerColor.Green to listOf(
             GridCell(13, 7), GridCell(12, 7), GridCell(11, 7), GridCell(10, 7), GridCell(9, 7), GridCell(8, 7),
         ),
     )
@@ -1598,10 +1598,10 @@ private object LudoBoardLayout {
     )
 
     val doorPoints = mapOf(
-        LudoPlayerColor.Yellow to BoardPoint(6.18f, 13.5f),
-        LudoPlayerColor.Blue to BoardPoint(1.5f, 5.72f),
-        LudoPlayerColor.Red to BoardPoint(9.28f, 1.5f),
-        LudoPlayerColor.Green to BoardPoint(13.5f, 9.28f),
+        LudoPlayerColor.Yellow to BoardPoint(6.5f, 13.5f),
+        LudoPlayerColor.Blue to BoardPoint(1.5f, 6.5f),
+        LudoPlayerColor.Red to BoardPoint(8.5f, 1.5f),
+        LudoPlayerColor.Green to BoardPoint(13.5f, 8.5f),
     )
 
     val starCells = setOf(2, 8, 15, 21, 28, 34, 41, 47)
@@ -1612,7 +1612,7 @@ private object LudoBoardLayout {
     fun pointFor(owner: LudoPlayerColor, progress: Int): BoardPoint {
         val grid = when {
             progress in FIRST_TRACK_PROGRESS..LAST_TRACK_PROGRESS -> {
-                val absoluteIndex = (owner.startCell - progress + trackCells.size) % trackCells.size
+                val absoluteIndex = (owner.startCell + progress) % trackCells.size
                 trackCells[absoluteIndex]
             }
             progress >= FIRST_HOME_LANE_PROGRESS -> {
