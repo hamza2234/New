@@ -78,12 +78,14 @@ fun LudoScreen(
     var displayedDice by remember { mutableIntStateOf(1) }
     var diceSpin by remember { mutableStateOf(0f) }
     var isDiceRolling by remember { mutableStateOf(false) }
+    var rollCountdown by remember { mutableIntStateOf(0) }
     var moveCountdown by remember { mutableIntStateOf(0) }
     var isPieceAnimating by remember { mutableStateOf(false) }
     val visualProgressOverrides = remember { mutableStateMapOf<Int, Int>() }
 
     suspend fun playDiceRoll(snapshot: LudoUiState): LudoUiState {
         isDiceRolling = true
+        rollCountdown = 0
         moveCountdown = 0
         repeat(20) { step ->
             displayedDice = ((displayedDice + step) % 6) + 1
@@ -98,6 +100,16 @@ fun LudoScreen(
         return rolled
     }
 
+    suspend fun rollAndResolve(snapshot: LudoUiState): LudoUiState {
+        val rolled = playDiceRoll(snapshot)
+        return if (!rolled.canRoll && rolled.availablePieceIds.isEmpty() && rolled.winner == null) {
+            delay(850)
+            engine.skipTurn(rolled)
+        } else {
+            rolled
+        }
+    }
+
     suspend fun playPieceMove(snapshot: LudoUiState, pieceId: Int): LudoUiState {
         if (isPieceAnimating) return snapshot
         val dice = snapshot.diceValue ?: return snapshot
@@ -110,6 +122,7 @@ fun LudoScreen(
         }
 
         isPieceAnimating = true
+        rollCountdown = 0
         moveCountdown = 0
         visualSteps.forEachIndexed { index, progress ->
             visualProgressOverrides[pieceId] = progress
@@ -126,7 +139,7 @@ fun LudoScreen(
         val snapshot = state
         if (matchStarted && snapshot.winner == null && snapshot.currentPlayer.isBot && snapshot.canRoll) {
             delay(1_100)
-            state = playDiceRoll(snapshot)
+            state = rollAndResolve(snapshot)
         }
     }
 
@@ -139,28 +152,58 @@ fun LudoScreen(
         isPieceAnimating,
         state.winner,
     ) {
-        val shouldCountDown = matchStarted &&
+        val shouldAutoRoll = matchStarted &&
             state.winner == null &&
-            !state.canRoll &&
+            state.canRoll &&
+            !state.currentPlayer.isBot &&
             !isDiceRolling &&
             !isPieceAnimating
 
-        if (shouldCountDown) {
-            for (remaining in 10 downTo 1) {
-                moveCountdown = remaining
+        if (shouldAutoRoll) {
+            moveCountdown = 0
+            for (remaining in 5 downTo 1) {
+                rollCountdown = remaining
                 delay(1_000)
             }
-            moveCountdown = 0
-            val snapshot = state
-            state = if (snapshot.currentPlayer.isBot && snapshot.availablePieceIds.isNotEmpty()) {
-                engine.chooseBotPiece(snapshot)?.let { pieceId ->
-                    scope.launch {
-                        state = playPieceMove(snapshot, pieceId)
-                    }
-                    snapshot
-                } ?: engine.skipTurn(snapshot)
+            rollCountdown = 0
+            state = rollAndResolve(state)
+        } else {
+            rollCountdown = 0
+        }
+    }
+
+    LaunchedEffect(
+        matchStarted,
+        state.currentTurn,
+        state.canRoll,
+        state.availablePieceIds,
+        isDiceRolling,
+        isPieceAnimating,
+        state.winner,
+    ) {
+        val shouldMove = matchStarted &&
+            state.winner == null &&
+            !state.canRoll &&
+            state.availablePieceIds.isNotEmpty() &&
+            !isDiceRolling &&
+            !isPieceAnimating
+
+        if (shouldMove) {
+            rollCountdown = 0
+            if (state.currentPlayer.isBot) {
+                delay(1_050)
+                val snapshot = state
+                val pieceId = engine.chooseBotPiece(snapshot) ?: snapshot.availablePieceIds.minOrNull()
+                state = pieceId?.let { playPieceMove(snapshot, it) } ?: engine.skipTurn(snapshot)
             } else {
-                engine.skipTurn(snapshot)
+                for (remaining in 8 downTo 1) {
+                    moveCountdown = remaining
+                    delay(1_000)
+                }
+                moveCountdown = 0
+                val snapshot = state
+                val pieceId = snapshot.availablePieceIds.minOrNull()
+                state = pieceId?.let { playPieceMove(snapshot, it) } ?: engine.skipTurn(snapshot)
             }
         } else {
             moveCountdown = 0
@@ -175,13 +218,14 @@ fun LudoScreen(
                 displayedDice = displayedDice,
                 diceSpin = diceSpin,
                 isDiceRolling = isDiceRolling,
+                rollCountdown = rollCountdown,
                 moveCountdown = moveCountdown,
                 visualProgressOverrides = visualProgressOverrides,
                 onRollDice = {
                     if (!isDiceRolling && !isPieceAnimating && state.canRoll) {
                         val snapshot = state
                         scope.launch {
-                            state = playDiceRoll(snapshot)
+                            state = rollAndResolve(snapshot)
                         }
                     }
                 },
@@ -195,6 +239,8 @@ fun LudoScreen(
                 },
                 onReset = {
                     visualProgressOverrides.clear()
+                    rollCountdown = 0
+                    moveCountdown = 0
                     state = engine.reset(selectedMode)
                 },
                 onExit = { matchStarted = false },
@@ -210,6 +256,7 @@ fun LudoScreen(
                 onStakeChanged = { stake = it.coerceIn(100, 100_000) },
                 onStart = {
                     visualProgressOverrides.clear()
+                    rollCountdown = 0
                     moveCountdown = 0
                     state = engine.reset(selectedMode)
                     matchStarted = true
@@ -518,6 +565,7 @@ private fun GameTableScreen(
     displayedDice: Int,
     diceSpin: Float,
     isDiceRolling: Boolean,
+    rollCountdown: Int,
     moveCountdown: Int,
     visualProgressOverrides: Map<Int, Int>,
     onRollDice: () -> Unit,
@@ -538,6 +586,7 @@ private fun GameTableScreen(
             displayedDice = displayedDice,
             diceSpin = diceSpin,
             isDiceRolling = isDiceRolling,
+            rollCountdown = rollCountdown,
             moveCountdown = moveCountdown,
             onRollDice = onRollDice,
         )
@@ -556,6 +605,7 @@ private fun GameTableScreen(
             displayedDice = displayedDice,
             diceSpin = diceSpin,
             isDiceRolling = isDiceRolling,
+            rollCountdown = rollCountdown,
             moveCountdown = moveCountdown,
             onRollDice = onRollDice,
         )
@@ -610,6 +660,7 @@ private fun TopPlayersRow(
     displayedDice: Int,
     diceSpin: Float,
     isDiceRolling: Boolean,
+    rollCountdown: Int,
     moveCountdown: Int,
     onRollDice: () -> Unit,
 ) {
@@ -627,6 +678,7 @@ private fun TopPlayersRow(
             displayedDice = displayedDice,
             diceSpin = diceSpin,
             isDiceRolling = isDiceRolling,
+            rollCountdown = rollCountdown,
             moveCountdown = moveCountdown,
             onRollDice = onRollDice,
         )
@@ -639,6 +691,7 @@ private fun TopPlayersRow(
             displayedDice = displayedDice,
             diceSpin = diceSpin,
             isDiceRolling = isDiceRolling,
+            rollCountdown = rollCountdown,
             moveCountdown = moveCountdown,
             onRollDice = onRollDice,
         )
@@ -651,6 +704,7 @@ private fun BottomPlayersRow(
     displayedDice: Int,
     diceSpin: Float,
     isDiceRolling: Boolean,
+    rollCountdown: Int,
     moveCountdown: Int,
     onRollDice: () -> Unit,
 ) {
@@ -668,6 +722,7 @@ private fun BottomPlayersRow(
             displayedDice = displayedDice,
             diceSpin = diceSpin,
             isDiceRolling = isDiceRolling,
+            rollCountdown = rollCountdown,
             moveCountdown = moveCountdown,
             onRollDice = onRollDice,
         )
@@ -680,6 +735,7 @@ private fun BottomPlayersRow(
             displayedDice = displayedDice,
             diceSpin = diceSpin,
             isDiceRolling = isDiceRolling,
+            rollCountdown = rollCountdown,
             moveCountdown = moveCountdown,
             onRollDice = onRollDice,
         )
@@ -696,6 +752,7 @@ private fun PlayerSeat(
     displayedDice: Int,
     diceSpin: Float,
     isDiceRolling: Boolean,
+    rollCountdown: Int,
     moveCountdown: Int,
     onRollDice: () -> Unit,
 ) {
@@ -717,7 +774,8 @@ private fun PlayerSeat(
                     displayedDice = displayedDice,
                     diceSpin = diceSpin,
                     isDiceRolling = isDiceRolling && isTurn,
-                    countdown = if (isTurn) moveCountdown else 0,
+                    countdown = if (isTurn) rollCountdown.takeIf { it > 0 } ?: moveCountdown else 0,
+                    countdownTotal = if (rollCountdown > 0) 5 else 8,
                     enabled = isTurn && state.canRoll && !state.currentPlayer.isBot && state.winner == null,
                     onClick = onRollDice,
                 )
@@ -743,7 +801,8 @@ private fun PlayerSeat(
                     displayedDice = displayedDice,
                     diceSpin = diceSpin,
                     isDiceRolling = isDiceRolling && isTurn,
-                    countdown = if (isTurn) moveCountdown else 0,
+                    countdown = if (isTurn) rollCountdown.takeIf { it > 0 } ?: moveCountdown else 0,
+                    countdownTotal = if (rollCountdown > 0) 5 else 8,
                     enabled = isTurn && state.canRoll && !state.currentPlayer.isBot && state.winner == null,
                     onClick = onRollDice,
                 )
@@ -765,40 +824,163 @@ private fun SeatDiceTimer(
     diceSpin: Float,
     isDiceRolling: Boolean,
     countdown: Int,
+    countdownTotal: Int,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    val background = if (isActive) {
-        Brush.verticalGradient(listOf(Color(0xFFFFD86A), Color(0xFFAA641F)))
-    } else {
-        Brush.verticalGradient(listOf(Color(0xFF6F7082), Color(0xFF3A3A4A)))
-    }
     Box(
         modifier = Modifier
-            .size(if (isActive) 48.dp else 34.dp)
+            .size(if (isActive) 54.dp else 36.dp)
             .shadow(if (isActive) 12.dp else 4.dp, RoundedCornerShape(12.dp))
             .graphicsLayer(
                 rotationZ = if (isDiceRolling) diceSpin else 0f,
                 rotationY = if (isDiceRolling) diceSpin % 55f else 0f,
             )
             .clip(RoundedCornerShape(12.dp))
-            .background(background)
-            .border(
-                width = if (isActive) 2.dp else 1.dp,
-                color = if (isActive) Color(0xFFFFF176) else Color.White.copy(alpha = 0.22f),
-                shape = RoundedCornerShape(12.dp),
-            )
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
+        DiceFace(
+            value = displayedDice,
+            active = isActive,
+            modifier = Modifier.fillMaxSize(),
+        )
+        if (countdown > 0 && isActive) {
+            CountdownClock(
+                remaining = countdown,
+                total = countdownTotal,
+                modifier = Modifier.matchParentSize(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun DiceFace(
+    value: Int,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        val corner = size.minDimension * 0.22f
+        drawRoundRect(
+            brush = Brush.linearGradient(
+                colors = if (active) {
+                    listOf(Color(0xFFFFE38A), Color(0xFFC77725), Color(0xFF6E3513))
+                } else {
+                    listOf(Color(0xFFB5B6C2), Color(0xFF626577), Color(0xFF343747))
+                },
+                start = Offset(0f, 0f),
+                end = Offset(size.width, size.height),
+            ),
+            size = size,
+            cornerRadius = CornerRadius(corner, corner),
+        )
+        drawRoundRect(
+            color = Color.White.copy(alpha = if (active) 0.45f else 0.22f),
+            topLeft = Offset(size.width * 0.1f, size.height * 0.08f),
+            size = Size(size.width * 0.45f, size.height * 0.18f),
+            cornerRadius = CornerRadius(corner * 0.6f, corner * 0.6f),
+        )
+        drawRoundRect(
+            color = Color.Black.copy(alpha = 0.24f),
+            size = size,
+            cornerRadius = CornerRadius(corner, corner),
+            style = Stroke(width = size.minDimension * 0.045f),
+        )
+
+        val pipColor = if (active) Color(0xFF5C2808) else Color(0xFF252938)
+        val pipRadius = size.minDimension * 0.07f
+        val left = size.width * 0.29f
+        val middle = size.width * 0.5f
+        val right = size.width * 0.71f
+        val top = size.height * 0.29f
+        val center = size.height * 0.5f
+        val bottom = size.height * 0.71f
+
+        fun pip(x: Float, y: Float) {
+            drawCircle(Color.White.copy(alpha = 0.34f), pipRadius * 1.18f, Offset(x - pipRadius * 0.2f, y - pipRadius * 0.2f))
+            drawCircle(pipColor, pipRadius, Offset(x, y))
+        }
+
+        when (value.coerceIn(1, 6)) {
+            1 -> pip(middle, center)
+            2 -> {
+                pip(left, top)
+                pip(right, bottom)
+            }
+            3 -> {
+                pip(left, top)
+                pip(middle, center)
+                pip(right, bottom)
+            }
+            4 -> {
+                pip(left, top)
+                pip(right, top)
+                pip(left, bottom)
+                pip(right, bottom)
+            }
+            5 -> {
+                pip(left, top)
+                pip(right, top)
+                pip(middle, center)
+                pip(left, bottom)
+                pip(right, bottom)
+            }
+            else -> {
+                pip(left, top)
+                pip(right, top)
+                pip(left, center)
+                pip(right, center)
+                pip(left, bottom)
+                pip(right, bottom)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CountdownClock(
+    remaining: Int,
+    total: Int,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val strokeWidth = size.minDimension * 0.09f
+            val inset = strokeWidth / 2f + 1.dp.toPx()
+            val arcSize = Size(size.width - inset * 2, size.height - inset * 2)
+            drawCircle(
+                color = Color.Black.copy(alpha = 0.34f),
+                radius = size.minDimension * 0.5f,
+                center = center,
+            )
+            drawArc(
+                color = Color.White.copy(alpha = 0.24f),
+                startAngle = -90f,
+                sweepAngle = 360f,
+                useCenter = false,
+                topLeft = Offset(inset, inset),
+                size = arcSize,
+                style = Stroke(width = strokeWidth),
+            )
+            drawArc(
+                brush = Brush.sweepGradient(
+                    listOf(Color(0xFFFFF176), Color(0xFFFF9F1C), Color(0xFFFFF176)),
+                    center = center,
+                ),
+                startAngle = -90f,
+                sweepAngle = 360f * (remaining.toFloat() / total.coerceAtLeast(1)),
+                useCenter = false,
+                topLeft = Offset(inset, inset),
+                size = arcSize,
+                style = Stroke(width = strokeWidth),
+            )
+        }
         Text(
-            text = when {
-                countdown > 0 -> countdown.toString()
-                isActive -> displayedDice.toString()
-                else -> "🎲"
-            },
-            style = if (isActive) MaterialTheme.typography.titleLarge else MaterialTheme.typography.labelMedium,
+            text = remaining.toString(),
             color = Color.White,
+            style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Black,
         )
     }
