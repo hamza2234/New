@@ -260,6 +260,6 @@ class LudoGameEngine(
         const val MAX_ROLLS_WITHOUT_SIX = 6
         const val MAX_CONSECUTIVE_SIXES = 3
         const val BLOCK_SIZE = 2
-        val SAFE_TRACK_CELLS = setOf(1, 9, 14, 22, 27, 35, 40, 47)
+        val SAFE_TRACK_CELLS = setOf(2, 8, 15, 21, 28, 34, 41, 47)
     }
 }

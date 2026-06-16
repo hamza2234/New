@@ -1460,10 +1460,10 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPremiumBoard() 
         )
     }
 
-    drawTriangleCenter(cell, LudoPlayerColor.Blue.toColor(), top = true)
-    drawTriangleCenter(cell, LudoPlayerColor.Yellow.toColor(), left = true)
-    drawTriangleCenter(cell, LudoPlayerColor.Green.toColor(), bottom = true)
-    drawTriangleCenter(cell, LudoPlayerColor.Red.toColor(), right = true)
+    drawTriangleCenter(cell, LudoPlayerColor.Red.toColor(), top = true)
+    drawTriangleCenter(cell, LudoPlayerColor.Blue.toColor(), left = true)
+    drawTriangleCenter(cell, LudoPlayerColor.Yellow.toColor(), bottom = true)
+    drawTriangleCenter(cell, LudoPlayerColor.Green.toColor(), right = true)
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBoardCell(
@@ -1570,16 +1570,16 @@ private object LudoBoardLayout {
 
     val homeLanes = mapOf(
         LudoPlayerColor.Blue to listOf(
-            GridCell(7, 1), GridCell(7, 2), GridCell(7, 3), GridCell(7, 4), GridCell(7, 5), GridCell(7, 6),
+            GridCell(1, 7), GridCell(2, 7), GridCell(3, 7), GridCell(4, 7), GridCell(5, 7), GridCell(6, 7),
         ),
         LudoPlayerColor.Red to listOf(
-            GridCell(13, 7), GridCell(12, 7), GridCell(11, 7), GridCell(10, 7), GridCell(9, 7), GridCell(8, 7),
+            GridCell(7, 1), GridCell(7, 2), GridCell(7, 3), GridCell(7, 4), GridCell(7, 5), GridCell(7, 6),
         ),
         LudoPlayerColor.Green to listOf(
-            GridCell(7, 13), GridCell(7, 12), GridCell(7, 11), GridCell(7, 10), GridCell(7, 9), GridCell(7, 8),
+            GridCell(13, 7), GridCell(12, 7), GridCell(11, 7), GridCell(10, 7), GridCell(9, 7), GridCell(8, 7),
         ),
         LudoPlayerColor.Yellow to listOf(
-            GridCell(1, 7), GridCell(2, 7), GridCell(3, 7), GridCell(4, 7), GridCell(5, 7), GridCell(6, 7),
+            GridCell(7, 13), GridCell(7, 12), GridCell(7, 11), GridCell(7, 10), GridCell(7, 9), GridCell(7, 8),
         ),
     )
 
@@ -1598,13 +1598,13 @@ private object LudoBoardLayout {
     )
 
     val doorPoints = mapOf(
-        LudoPlayerColor.Blue to BoardPoint(6.5f, 1.5f),
-        LudoPlayerColor.Red to BoardPoint(13.5f, 6.5f),
-        LudoPlayerColor.Green to BoardPoint(8.5f, 13.5f),
-        LudoPlayerColor.Yellow to BoardPoint(1.5f, 8.5f),
+        LudoPlayerColor.Yellow to BoardPoint(6.5f, 13.5f),
+        LudoPlayerColor.Blue to BoardPoint(1.5f, 6.5f),
+        LudoPlayerColor.Red to BoardPoint(8.5f, 1.5f),
+        LudoPlayerColor.Green to BoardPoint(13.5f, 8.5f),
     )
 
-    val starCells = setOf(1, 9, 14, 22, 27, 35, 40, 47)
+    val starCells = setOf(2, 8, 15, 21, 28, 34, 41, 47)
 
     fun doorPoint(color: LudoPlayerColor): BoardPoint =
         doorPoints.getValue(color)

@@ -10,10 +10,10 @@ enum class LudoPlayerColor(
     val startCell: Int,
     val argb: Long,
 ) {
-    Yellow("الأصفر", startCell = 9, argb = 0xFFFFBE0B),
-    Blue("الأزرق", startCell = 22, argb = 0xFF3A86FF),
-    Red("الأحمر", startCell = 35, argb = 0xFFE84855),
-    Green("الأخضر", startCell = 47, argb = 0xFF2A9D8F),
+    Yellow("الأصفر", startCell = 0, argb = 0xFFFFBE0B),
+    Blue("الأزرق", startCell = 13, argb = 0xFF3A86FF),
+    Red("الأحمر", startCell = 26, argb = 0xFFE84855),
+    Green("الأخضر", startCell = 39, argb = 0xFF2A9D8F),
 }
 
 data class LudoPlayer(

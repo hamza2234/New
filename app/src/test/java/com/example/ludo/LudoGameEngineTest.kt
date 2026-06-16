@@ -62,6 +62,14 @@ class LudoGameEngineTest {
     }
 
     @Test
+    fun colorStartCellsMatchGlobeDoorSquares() {
+        assertEquals(0, LudoPlayerColor.Yellow.startCell)
+        assertEquals(13, LudoPlayerColor.Blue.startCell)
+        assertEquals(26, LudoPlayerColor.Red.startCell)
+        assertEquals(39, LudoPlayerColor.Green.startCell)
+    }
+
+    @Test
     fun opponentBlockPreventsPassing() {
         val initialState = engine.newGame(LudoGameMode.FourPlayers)
         val pieces = initialState.pieces.map { piece ->
