@@ -41,12 +41,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -60,28 +63,104 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun LudoScreen(
     modifier: Modifier = Modifier,
 ) {
     val engine = remember { LudoGameEngine() }
+    val scope = rememberCoroutineScope()
     var selectedMode by remember { mutableStateOf(LudoGameMode.Solo) }
     var stake by remember { mutableIntStateOf(500) }
     var matchStarted by remember { mutableStateOf(false) }
     var state by remember { mutableStateOf(engine.newGame(selectedMode)) }
+    var displayedDice by remember { mutableIntStateOf(1) }
+    var diceSpin by remember { mutableStateOf(0f) }
+    var isDiceRolling by remember { mutableStateOf(false) }
+    var moveCountdown by remember { mutableIntStateOf(0) }
+    var isPieceAnimating by remember { mutableStateOf(false) }
+    val visualProgressOverrides = remember { mutableStateMapOf<Int, Int>() }
+
+    suspend fun playDiceRoll(snapshot: LudoUiState): LudoUiState {
+        isDiceRolling = true
+        moveCountdown = 0
+        repeat(16) { step ->
+            displayedDice = ((displayedDice + step) % 6) + 1
+            diceSpin += 58f
+            delay(48)
+        }
+        val rolled = engine.rollDice(snapshot)
+        displayedDice = rolled.diceValue ?: displayedDice
+        diceSpin += 30f
+        isDiceRolling = false
+        return rolled
+    }
+
+    suspend fun playPieceMove(snapshot: LudoUiState, pieceId: Int): LudoUiState {
+        if (isPieceAnimating) return snapshot
+        val dice = snapshot.diceValue ?: return snapshot
+        val piece = snapshot.pieces.firstOrNull { it.id == pieceId } ?: return snapshot
+        val target = engine.targetProgressFor(piece, dice) ?: return snapshot
+        val visualSteps = when {
+            piece.progress == HOME_PROGRESS -> listOf(FIRST_TRACK_PROGRESS)
+            target > piece.progress -> ((piece.progress + 1)..target).toList()
+            else -> listOf(target)
+        }
+
+        isPieceAnimating = true
+        moveCountdown = 0
+        visualSteps.forEachIndexed { index, progress ->
+            visualProgressOverrides[pieceId] = progress
+            delay(if (index == 0 && piece.progress == HOME_PROGRESS) 260 else 145)
+        }
+        val moved = engine.movePiece(snapshot, pieceId)
+        delay(80)
+        visualProgressOverrides.remove(pieceId)
+        isPieceAnimating = false
+        return moved
+    }
 
     LaunchedEffect(matchStarted, state.currentTurn, state.canRoll, state.availablePieceIds, state.winner) {
         val snapshot = state
         if (matchStarted && snapshot.winner == null && snapshot.currentPlayer.isBot) {
-            delay(if (snapshot.canRoll) 650 else 450)
+            delay(if (snapshot.canRoll) 560 else 430)
             state = if (snapshot.canRoll) {
-                engine.rollDice(snapshot)
+                playDiceRoll(snapshot)
             } else {
                 engine.chooseBotPiece(snapshot)?.let { pieceId ->
-                    engine.movePiece(snapshot, pieceId)
+                    playPieceMove(snapshot, pieceId)
                 } ?: snapshot
             }
+        }
+    }
+
+    LaunchedEffect(
+        matchStarted,
+        state.currentTurn,
+        state.canRoll,
+        state.availablePieceIds,
+        isDiceRolling,
+        isPieceAnimating,
+        state.winner,
+    ) {
+        val shouldCountDown = matchStarted &&
+            state.winner == null &&
+            !state.canRoll &&
+            state.availablePieceIds.isNotEmpty() &&
+            !state.currentPlayer.isBot &&
+            !isDiceRolling &&
+            !isPieceAnimating
+
+        if (shouldCountDown) {
+            for (remaining in 5 downTo 1) {
+                moveCountdown = remaining
+                delay(1_000)
+            }
+            moveCountdown = 0
+            state = engine.skipTurn(state)
+        } else {
+            moveCountdown = 0
         }
     }
 
@@ -90,9 +169,31 @@ fun LudoScreen(
             GameTableScreen(
                 state = state,
                 stake = stake,
-                onRollDice = { state = engine.rollDice(state) },
-                onPieceClick = { pieceId -> state = engine.movePiece(state, pieceId) },
-                onReset = { state = engine.reset(selectedMode) },
+                displayedDice = displayedDice,
+                diceSpin = diceSpin,
+                isDiceRolling = isDiceRolling,
+                moveCountdown = moveCountdown,
+                visualProgressOverrides = visualProgressOverrides,
+                onRollDice = {
+                    if (!isDiceRolling && !isPieceAnimating) {
+                        val snapshot = state
+                        scope.launch {
+                            state = playDiceRoll(snapshot)
+                        }
+                    }
+                },
+                onPieceClick = { pieceId ->
+                    if (!isDiceRolling && !isPieceAnimating) {
+                        val snapshot = state
+                        scope.launch {
+                            state = playPieceMove(snapshot, pieceId)
+                        }
+                    }
+                },
+                onReset = {
+                    visualProgressOverrides.clear()
+                    state = engine.reset(selectedMode)
+                },
                 onExit = { matchStarted = false },
             )
         } else {
@@ -105,6 +206,8 @@ fun LudoScreen(
                 },
                 onStakeChanged = { stake = it.coerceIn(100, 100_000) },
                 onStart = {
+                    visualProgressOverrides.clear()
+                    moveCountdown = 0
                     state = engine.reset(selectedMode)
                     matchStarted = true
                 },
@@ -409,6 +512,11 @@ private fun PremiumOptionButton(
 private fun GameTableScreen(
     state: LudoUiState,
     stake: Int,
+    displayedDice: Int,
+    diceSpin: Float,
+    isDiceRolling: Boolean,
+    moveCountdown: Int,
+    visualProgressOverrides: Map<Int, Int>,
     onRollDice: () -> Unit,
     onPieceClick: (Int) -> Unit,
     onReset: () -> Unit,
@@ -422,21 +530,35 @@ private fun GameTableScreen(
     ) {
         GameTopBar(stake = stake, onExit = onExit, onReset = onReset)
         Spacer(modifier = Modifier.height(12.dp))
-        TopPlayersRow(state = state)
+        TopPlayersRow(
+            state = state,
+            displayedDice = displayedDice,
+            diceSpin = diceSpin,
+            isDiceRolling = isDiceRolling,
+            moveCountdown = moveCountdown,
+            onRollDice = onRollDice,
+        )
         Spacer(modifier = Modifier.height(8.dp))
         LudoBoardStage(
             state = state,
+            visualProgressOverrides = visualProgressOverrides,
             onPieceClick = onPieceClick,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f, fill = false),
         )
         Spacer(modifier = Modifier.height(8.dp))
-        BottomPlayersRow(state = state)
-        Spacer(modifier = Modifier.height(8.dp))
-        DiceControlBar(
+        BottomPlayersRow(
             state = state,
+            displayedDice = displayedDice,
+            diceSpin = diceSpin,
+            isDiceRolling = isDiceRolling,
+            moveCountdown = moveCountdown,
             onRollDice = onRollDice,
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        MoveStatusBar(
+            state = state,
             onPieceClick = onPieceClick,
         )
         Spacer(modifier = Modifier.height(10.dp))
@@ -482,55 +604,99 @@ private fun GameTopBar(
 }
 
 @Composable
-private fun TopPlayersRow(state: LudoUiState) {
+private fun TopPlayersRow(
+    state: LudoUiState,
+    displayedDice: Int,
+    diceSpin: Float,
+    isDiceRolling: Boolean,
+    moveCountdown: Int,
+    onRollDice: () -> Unit,
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         PlayerSeat(
+            state = state,
             player = state.players.first { it.color == LudoPlayerColor.Blue },
             label = "زهور",
             isTurn = state.currentTurn == LudoPlayerColor.Blue,
             alignEnd = false,
+            displayedDice = displayedDice,
+            diceSpin = diceSpin,
+            isDiceRolling = isDiceRolling,
+            moveCountdown = moveCountdown,
+            onRollDice = onRollDice,
         )
         PlayerSeat(
+            state = state,
             player = state.players.first { it.color == LudoPlayerColor.Red },
             label = "عاشق",
             isTurn = state.currentTurn == LudoPlayerColor.Red,
             alignEnd = true,
+            displayedDice = displayedDice,
+            diceSpin = diceSpin,
+            isDiceRolling = isDiceRolling,
+            moveCountdown = moveCountdown,
+            onRollDice = onRollDice,
         )
     }
 }
 
 @Composable
-private fun BottomPlayersRow(state: LudoUiState) {
+private fun BottomPlayersRow(
+    state: LudoUiState,
+    displayedDice: Int,
+    diceSpin: Float,
+    isDiceRolling: Boolean,
+    moveCountdown: Int,
+    onRollDice: () -> Unit,
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         PlayerSeat(
+            state = state,
             player = state.players.first { it.color == LudoPlayerColor.Yellow },
             label = "مراجي",
             isTurn = state.currentTurn == LudoPlayerColor.Yellow,
             alignEnd = false,
+            displayedDice = displayedDice,
+            diceSpin = diceSpin,
+            isDiceRolling = isDiceRolling,
+            moveCountdown = moveCountdown,
+            onRollDice = onRollDice,
         )
         PlayerSeat(
+            state = state,
             player = state.players.first { it.color == LudoPlayerColor.Green },
             label = "Biso Nova",
             isTurn = state.currentTurn == LudoPlayerColor.Green,
             alignEnd = true,
+            displayedDice = displayedDice,
+            diceSpin = diceSpin,
+            isDiceRolling = isDiceRolling,
+            moveCountdown = moveCountdown,
+            onRollDice = onRollDice,
         )
     }
 }
 
 @Composable
 private fun PlayerSeat(
+    state: LudoUiState,
     player: LudoPlayer,
     label: String,
     isTurn: Boolean,
     alignEnd: Boolean,
+    displayedDice: Int,
+    diceSpin: Float,
+    isDiceRolling: Boolean,
+    moveCountdown: Int,
+    onRollDice: () -> Unit,
 ) {
     val ringColor by animateColorAsState(
         targetValue = if (isTurn) Color(0xFFFFE34D) else player.color.toColor(),
@@ -544,7 +710,17 @@ private fun PlayerSeat(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (alignEnd) SmallGiftBadge()
+            if (alignEnd) {
+                SeatDiceTimer(
+                    isActive = isTurn,
+                    displayedDice = displayedDice,
+                    diceSpin = diceSpin,
+                    isDiceRolling = isDiceRolling && isTurn,
+                    countdown = if (isTurn) moveCountdown else 0,
+                    enabled = isTurn && state.canRoll && !state.currentPlayer.isBot && state.winner == null,
+                    onClick = onRollDice,
+                )
+            }
             Box(
                 modifier = Modifier
                     .size(if (isTurn) 64.dp else 56.dp)
@@ -560,7 +736,17 @@ private fun PlayerSeat(
                     fontWeight = FontWeight.Black,
                 )
             }
-            if (!alignEnd) SmallGiftBadge()
+            if (!alignEnd) {
+                SeatDiceTimer(
+                    isActive = isTurn,
+                    displayedDice = displayedDice,
+                    diceSpin = diceSpin,
+                    isDiceRolling = isDiceRolling && isTurn,
+                    countdown = if (isTurn) moveCountdown else 0,
+                    enabled = isTurn && state.canRoll && !state.currentPlayer.isBot && state.winner == null,
+                    onClick = onRollDice,
+                )
+            }
         }
         Text(
             text = label,
@@ -572,22 +758,55 @@ private fun PlayerSeat(
 }
 
 @Composable
-private fun SmallGiftBadge() {
+private fun SeatDiceTimer(
+    isActive: Boolean,
+    displayedDice: Int,
+    diceSpin: Float,
+    isDiceRolling: Boolean,
+    countdown: Int,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val background = if (isActive) {
+        Brush.verticalGradient(listOf(Color(0xFFFFD86A), Color(0xFFAA641F)))
+    } else {
+        Brush.verticalGradient(listOf(Color(0xFF6F7082), Color(0xFF3A3A4A)))
+    }
     Box(
         modifier = Modifier
-            .size(24.dp)
-            .clip(CircleShape)
-            .background(Brush.verticalGradient(listOf(Color(0xFFFFC857), Color(0xFFFF7A00))))
-            .border(1.dp, Color.White.copy(alpha = 0.55f), CircleShape),
+            .size(if (isActive) 48.dp else 34.dp)
+            .shadow(if (isActive) 12.dp else 4.dp, RoundedCornerShape(12.dp))
+            .graphicsLayer(
+                rotationZ = if (isDiceRolling) diceSpin else 0f,
+                rotationY = if (isDiceRolling) diceSpin % 55f else 0f,
+            )
+            .clip(RoundedCornerShape(12.dp))
+            .background(background)
+            .border(
+                width = if (isActive) 2.dp else 1.dp,
+                color = if (isActive) Color(0xFFFFF176) else Color.White.copy(alpha = 0.22f),
+                shape = RoundedCornerShape(12.dp),
+            )
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text("🎁", style = MaterialTheme.typography.labelSmall)
+        Text(
+            text = when {
+                countdown > 0 -> countdown.toString()
+                isActive -> displayedDice.toString()
+                else -> "🎲"
+            },
+            style = if (isActive) MaterialTheme.typography.titleLarge else MaterialTheme.typography.labelMedium,
+            color = Color.White,
+            fontWeight = FontWeight.Black,
+        )
     }
 }
 
 @Composable
 private fun LudoBoardStage(
     state: LudoUiState,
+    visualProgressOverrides: Map<Int, Int>,
     onPieceClick: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -613,6 +832,7 @@ private fun LudoBoardStage(
             ) {
                 LudoBoard(
                     state = state,
+                    visualProgressOverrides = visualProgressOverrides,
                     onPieceClick = onPieceClick,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -624,6 +844,7 @@ private fun LudoBoardStage(
 @Composable
 private fun LudoBoard(
     state: LudoUiState,
+    visualProgressOverrides: Map<Int, Int>,
     onPieceClick: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -634,8 +855,11 @@ private fun LudoBoard(
         val boardSize = if (maxWidth < maxHeight) maxWidth else maxHeight
         val cellSize = boardSize / BOARD_SIDE_CELLS
         val pieceSize = cellSize * 0.78f
-        val pieceTargets = remember(state.pieces) {
-            state.pieces.associate { piece -> piece.id to LudoBoardLayout.cellForPiece(piece) }
+        val visualPieces = state.pieces.map { piece ->
+            visualProgressOverrides[piece.id]?.let { progress -> piece.copy(progress = progress) } ?: piece
+        }
+        val pieceTargets = remember(visualPieces) {
+            visualPieces.associate { piece -> piece.id to LudoBoardLayout.cellForPiece(piece) }
         }
         val occupied = pieceTargets.entries.groupBy { it.value.occupancyKey }
 
@@ -644,7 +868,7 @@ private fun LudoBoard(
                 drawPremiumBoard()
             }
 
-            state.pieces.forEach { piece ->
+            visualPieces.forEach { piece ->
                 val target = pieceTargets.getValue(piece.id)
                 val group = occupied.getValue(target.occupancyKey).map { it.key }.sorted()
                 val overlap = overlapOffset(group.size, group.indexOf(piece.id))
@@ -728,32 +952,41 @@ private fun TokenPiece(
 }
 
 @Composable
-private fun DiceControlBar(
+private fun MoveStatusBar(
     state: LudoUiState,
-    onRollDice: () -> Unit,
     onPieceClick: (Int) -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(78.dp),
+            .height(58.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0x66302048))
+            .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(18.dp))
+            .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center,
+        horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        PlayerPulse(color = state.currentTurn.toColor(), label = state.currentTurn.label.take(1))
-        Spacer(modifier = Modifier.width(10.dp))
-        DiceButton(
-            diceValue = state.diceValue,
-            enabled = state.canRoll && !state.currentPlayer.isBot && state.winner == null,
-            onClick = onRollDice,
-        )
-        Spacer(modifier = Modifier.width(10.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = if (state.canRoll) "اضغط النرد بجانب اللاعب الحالي" else "اختر قطعة قبل انتهاء الوقت",
+                color = Color.White,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = state.statusMessage,
+                color = Color.White.copy(alpha = 0.68f),
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
         MoveHintBadge(
             state = state,
             onPieceClick = onPieceClick,
         )
-        Spacer(modifier = Modifier.width(16.dp))
-        IconBadge(text = "♛", tint = Color(0xFF4E5871), background = Color(0xFFD7D9E0))
     }
 }
 

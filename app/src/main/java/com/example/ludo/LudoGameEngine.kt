@@ -104,6 +104,21 @@ class LudoGameEngine(
         )
     }
 
+    fun skipTurn(state: LudoUiState): LudoUiState {
+        if (state.canRoll || state.winner != null) return state
+
+        val nextTurn = nextTurnAfter(state, dice = 1)
+        return state.copy(
+            currentTurn = nextTurn,
+            canRoll = true,
+            availablePieceIds = emptySet(),
+            statusMessage = "انتهى الوقت. الدور الآن لـ ${nextTurn.label}",
+        )
+    }
+
+    fun targetProgressFor(piece: LudoPiece, dice: Int): Int? =
+        targetProgress(piece.progress, dice)
+
     fun reset(mode: LudoGameMode): LudoUiState = newGame(mode)
 
     fun chooseBotPiece(state: LudoUiState): Int? {
