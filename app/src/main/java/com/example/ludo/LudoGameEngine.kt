@@ -37,11 +37,25 @@ class LudoGameEngine(
         if (!state.canRoll || state.winner != null) return state
 
         val dice = forcedValue?.coerceIn(1, 6) ?: nextFairDice()
+        val consecutiveSixes = if (dice == 6) state.consecutiveSixes + 1 else 0
+        if (consecutiveSixes >= MAX_CONSECUTIVE_SIXES) {
+            val nextTurn = nextTurnAfter(state, dice = 1)
+            return state.copy(
+                currentTurn = nextTurn,
+                diceValue = dice,
+                consecutiveSixes = 0,
+                canRoll = true,
+                availablePieceIds = emptySet(),
+                statusMessage = "ظهرت ٦ ثلاث مرات. الدور الآن لـ ${nextTurn.label}",
+            )
+        }
+
         val availableMoves = movablePieceIds(state, state.currentTurn, dice)
 
         return if (availableMoves.isEmpty()) {
             state.copy(
                 diceValue = dice,
+                consecutiveSixes = consecutiveSixes,
                 canRoll = false,
                 availablePieceIds = emptySet(),
                 statusMessage = "النرد $dice ولا توجد حركة متاحة. انتظر انتهاء الوقت",
@@ -49,6 +63,7 @@ class LudoGameEngine(
         } else {
             state.copy(
                 diceValue = dice,
+                consecutiveSixes = consecutiveSixes,
                 canRoll = false,
                 availablePieceIds = availableMoves,
                 statusMessage = "النرد $dice. اختر قطعة ${state.currentTurn.label} للتحريك",
@@ -93,6 +108,7 @@ class LudoGameEngine(
             pieces = movedPieces,
             currentTurn = nextTurn,
             canRoll = true,
+            consecutiveSixes = if (winner == null && dice == 6) state.consecutiveSixes else 0,
             availablePieceIds = emptySet(),
             lastMove = LudoMove(
                 pieceId = piece.id,
@@ -112,6 +128,7 @@ class LudoGameEngine(
         return state.copy(
             currentTurn = nextTurn,
             canRoll = true,
+            consecutiveSixes = 0,
             availablePieceIds = emptySet(),
             statusMessage = "انتهى الوقت. الدور الآن لـ ${nextTurn.label}",
         )
@@ -139,6 +156,7 @@ class LudoGameEngine(
             .mapNotNull { id ->
                 val piece = state.pieces.firstOrNull { it.id == id } ?: return@mapNotNull null
                 val target = targetProgress(piece.progress, dice) ?: return@mapNotNull null
+                if (!isLegalMove(state, piece, dice)) return@mapNotNull null
                 BotCandidate(
                     pieceId = id,
                     finishes = target == FINISHED_PROGRESS,
@@ -161,9 +179,36 @@ class LudoGameEngine(
         player: LudoPlayerColor,
         dice: Int,
     ): Set<Int> = state.pieces
-        .filter { piece -> piece.owner == player && targetProgress(piece.progress, dice) != null }
+        .filter { piece -> piece.owner == player && isLegalMove(state, piece, dice) }
         .map { it.id }
         .toSet()
+
+    private fun isLegalMove(state: LudoUiState, piece: LudoPiece, dice: Int): Boolean {
+        val target = targetProgress(piece.progress, dice) ?: return false
+        if (piece.progress in FIRST_TRACK_PROGRESS..LAST_TRACK_PROGRESS &&
+            target in FIRST_TRACK_PROGRESS..LAST_TRACK_PROGRESS &&
+            pathBlockedByOpponent(state, piece, target)
+        ) {
+            return false
+        }
+        return true
+    }
+
+    private fun pathBlockedByOpponent(
+        state: LudoUiState,
+        movingPiece: LudoPiece,
+        targetProgress: Int,
+    ): Boolean {
+        val start = movingPiece.progress + 1
+        return (start..targetProgress).any { progress ->
+            val cell = absoluteTrackCell(movingPiece.owner, progress)
+            state.pieces.count { candidate ->
+                candidate.owner != movingPiece.owner &&
+                    candidate.progress in FIRST_TRACK_PROGRESS..LAST_TRACK_PROGRESS &&
+                    absoluteTrackCell(candidate.owner, candidate.progress) == cell
+            } >= BLOCK_SIZE
+        }
+    }
 
     private fun targetProgress(currentProgress: Int, dice: Int): Int? = when {
         currentProgress == HOME_PROGRESS && dice == 6 -> FIRST_TRACK_PROGRESS
@@ -193,7 +238,7 @@ class LudoGameEngine(
     }
 
     private fun absoluteTrackCell(owner: LudoPlayerColor, progress: Int): Int =
-        (owner.startCell + progress) % TRACK_CELL_COUNT
+        (owner.startCell - progress + TRACK_CELL_COUNT) % TRACK_CELL_COUNT
 
     private fun nextTurnAfter(state: LudoUiState, dice: Int): LudoPlayerColor {
         if (dice == 6) return state.currentTurn
@@ -213,6 +258,8 @@ class LudoGameEngine(
     private companion object {
         const val TRACK_CELL_COUNT = 52
         const val MAX_ROLLS_WITHOUT_SIX = 6
+        const val MAX_CONSECUTIVE_SIXES = 3
+        const val BLOCK_SIZE = 2
         val SAFE_TRACK_CELLS = setOf(1, 9, 14, 22, 27, 35, 40, 47)
     }
 }

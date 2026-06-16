@@ -42,7 +42,7 @@ class LudoGameEngineTest {
         val pieces = initialState.pieces.map { piece ->
             when (piece.id) {
                 0 -> piece.copy(progress = 4)
-                4 -> piece.copy(progress = 45)
+                4 -> piece.copy(progress = 19)
                 else -> piece
             }
         }
@@ -59,5 +59,43 @@ class LudoGameEngineTest {
         assertEquals(6, moved.pieces.first { it.id == 0 }.progress)
         assertEquals(HOME_PROGRESS, moved.pieces.first { it.id == 4 }.progress)
         assertEquals(listOf(4), moved.lastMove?.capturedPieceIds)
+    }
+
+    @Test
+    fun opponentBlockPreventsPassing() {
+        val initialState = engine.newGame(LudoGameMode.FourPlayers)
+        val pieces = initialState.pieces.map { piece ->
+            when (piece.id) {
+                0 -> piece.copy(progress = FIRST_TRACK_PROGRESS)
+                4, 5 -> piece.copy(progress = 15)
+                else -> piece
+            }
+        }
+        val readyToRoll = initialState.copy(
+            pieces = pieces,
+            currentTurn = LudoPlayerColor.Yellow,
+            canRoll = true,
+        )
+
+        val rolled = engine.rollDice(readyToRoll, forcedValue = 3)
+
+        assertEquals(emptySet<Int>(), rolled.availablePieceIds)
+        assertFalse(rolled.canRoll)
+    }
+
+    @Test
+    fun threeConsecutiveSixesSkipTurn() {
+        val initialState = engine.newGame(LudoGameMode.FourPlayers)
+
+        val firstRoll = engine.rollDice(initialState, forcedValue = 6)
+        val firstMove = engine.movePiece(firstRoll, pieceId = 0)
+        val secondRoll = engine.rollDice(firstMove, forcedValue = 6)
+        val secondMove = engine.movePiece(secondRoll, pieceId = 0)
+        val thirdRoll = engine.rollDice(secondMove, forcedValue = 6)
+
+        assertTrue(thirdRoll.canRoll)
+        assertEquals(LudoPlayerColor.Blue, thirdRoll.currentTurn)
+        assertEquals(0, thirdRoll.consecutiveSixes)
+        assertEquals(emptySet<Int>(), thirdRoll.availablePieceIds)
     }
 }

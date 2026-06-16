@@ -43,6 +43,7 @@ data class LudoUiState(
     val pieces: List<LudoPiece>,
     val currentTurn: LudoPlayerColor,
     val diceValue: Int? = null,
+    val consecutiveSixes: Int = 0,
     val canRoll: Boolean = true,
     val availablePieceIds: Set<Int> = emptySet(),
     val lastMove: LudoMove? = null,

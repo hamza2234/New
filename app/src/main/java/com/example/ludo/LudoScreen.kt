@@ -1612,7 +1612,7 @@ private object LudoBoardLayout {
     fun pointFor(owner: LudoPlayerColor, progress: Int): BoardPoint {
         val grid = when {
             progress in FIRST_TRACK_PROGRESS..LAST_TRACK_PROGRESS -> {
-                val absoluteIndex = (owner.startCell + progress) % trackCells.size
+                val absoluteIndex = (owner.startCell - progress + trackCells.size) % trackCells.size
                 trackCells[absoluteIndex]
             }
             progress >= FIRST_HOME_LANE_PROGRESS -> {
