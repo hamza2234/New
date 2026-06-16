@@ -305,9 +305,9 @@ private fun PremiumBackground(
             .background(
                 Brush.verticalGradient(
                     listOf(
-                        Color(0xFF301A55),
-                        Color(0xFF171331),
-                        Color(0xFF221338),
+                        Color(0xFF170B2E),
+                        Color(0xFF090817),
+                        Color(0xFF130B22),
                     ),
                 ),
             ),
@@ -315,7 +315,7 @@ private fun PremiumBackground(
         Canvas(modifier = Modifier.fillMaxSize()) {
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFF7C4DFF).copy(alpha = 0.34f), Color.Transparent),
+                    colors = listOf(Color(0xFF5A2EFF).copy(alpha = 0.24f), Color.Transparent),
                     center = Offset(size.width * 0.2f, size.height * 0.06f),
                     radius = size.width * 0.7f,
                 ),
@@ -324,7 +324,7 @@ private fun PremiumBackground(
             )
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFF00D9FF).copy(alpha = 0.18f), Color.Transparent),
+                    colors = listOf(Color(0xFF00A3FF).copy(alpha = 0.14f), Color.Transparent),
                     center = Offset(size.width * 0.78f, size.height * 0.88f),
                     radius = size.width * 0.85f,
                 ),
@@ -1371,7 +1371,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPremiumBoard() 
     val stroke = 1.dp.toPx()
 
     drawRoundRect(
-        brush = Brush.verticalGradient(listOf(Color(0xFFFFF3DC), Color(0xFFEED2A8))),
+        brush = Brush.verticalGradient(listOf(Color(0xFF2B1D32), Color(0xFF171222))),
         size = Size(boardSize, boardSize),
         cornerRadius = CornerRadius(cell * 0.38f),
     )
@@ -1380,8 +1380,9 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPremiumBoard() 
         drawRoundRect(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    block.color.toColor().copy(alpha = 0.78f),
-                    block.color.toColor(),
+                    block.color.toColor().copy(alpha = 0.76f),
+                    block.color.toColor().copy(alpha = 0.94f),
+                    Color.Black.copy(alpha = 0.22f),
                 ),
                 center = Offset((block.col + 3f) * cell, (block.row + 3f) * cell),
                 radius = cell * 4.2f,
@@ -1398,12 +1399,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPremiumBoard() 
     }
 
     LudoBoardLayout.trackCells.forEachIndexed { index, grid ->
-        val safeColor = LudoBoardLayout.safeCellColor(index)?.toColor()?.copy(alpha = 0.22f)
+        val safeColor = LudoBoardLayout.safeCellColor(index)?.toColor()?.copy(alpha = 0.45f)
         drawBoardCell(
             col = grid.col,
             row = grid.row,
             cell = cell,
-            fill = safeColor ?: Color(0xFFFDF8EF),
+            fill = safeColor ?: Color(0xFFE7E0D4),
             strokeWidth = stroke,
         )
         if (index in LudoBoardLayout.starCells) {
@@ -1421,7 +1422,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPremiumBoard() 
                 col = grid.col,
                 row = grid.row,
                 cell = cell,
-                fill = color.toColor().copy(alpha = 0.78f),
+                fill = color.toColor().copy(alpha = 0.88f),
                 strokeWidth = stroke,
             )
         }
@@ -1431,7 +1432,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPremiumBoard() 
         cells.forEach { grid ->
             drawCircle(
                 brush = Brush.radialGradient(
-                    listOf(Color.White.copy(alpha = 0.55f), color.toColor().copy(alpha = 0.86f)),
+                    listOf(Color.White.copy(alpha = 0.46f), color.toColor().copy(alpha = 0.96f)),
                     center = Offset((grid.col + 0.5f) * cell, (grid.row + 0.5f) * cell),
                     radius = cell * 0.46f,
                 ),
@@ -1597,7 +1598,7 @@ private object LudoBoardLayout {
     )
 
     val doorPoints = mapOf(
-        LudoPlayerColor.Yellow to BoardPoint(5.72f, 13.5f),
+        LudoPlayerColor.Yellow to BoardPoint(6.18f, 13.5f),
         LudoPlayerColor.Blue to BoardPoint(1.5f, 5.72f),
         LudoPlayerColor.Red to BoardPoint(9.28f, 1.5f),
         LudoPlayerColor.Green to BoardPoint(13.5f, 9.28f),
@@ -1611,7 +1612,7 @@ private object LudoBoardLayout {
     fun pointFor(owner: LudoPlayerColor, progress: Int): BoardPoint {
         val grid = when {
             progress in FIRST_TRACK_PROGRESS..LAST_TRACK_PROGRESS -> {
-                val absoluteIndex = (owner.startCell + progress) % trackCells.size
+                val absoluteIndex = (owner.startCell - progress + trackCells.size) % trackCells.size
                 trackCells[absoluteIndex]
             }
             progress >= FIRST_HOME_LANE_PROGRESS -> {

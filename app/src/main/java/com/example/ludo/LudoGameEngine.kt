@@ -193,7 +193,7 @@ class LudoGameEngine(
     }
 
     private fun absoluteTrackCell(owner: LudoPlayerColor, progress: Int): Int =
-        (owner.startCell + progress) % TRACK_CELL_COUNT
+        (owner.startCell - progress + TRACK_CELL_COUNT) % TRACK_CELL_COUNT
 
     private fun nextTurnAfter(state: LudoUiState, dice: Int): LudoPlayerColor {
         if (dice == 6) return state.currentTurn
