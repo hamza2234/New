@@ -199,7 +199,13 @@ fun LudoScreen(
                 delay(90)
                 val snapshot = state
                 val pieceId = engine.chooseBotPiece(snapshot) ?: snapshot.availablePieceIds.minOrNull()
-                state = pieceId?.let { playPieceMove(snapshot, it) } ?: engine.skipTurn(snapshot)
+                if (pieceId == null) {
+                    state = engine.skipTurn(snapshot)
+                } else {
+                    scope.launch {
+                        state = playPieceMove(snapshot, pieceId)
+                    }
+                }
             } else {
                 for (remaining in 8 downTo 1) {
                     moveCountdown = remaining
@@ -208,7 +214,13 @@ fun LudoScreen(
                 moveCountdown = 0
                 val snapshot = state
                 val pieceId = snapshot.availablePieceIds.minOrNull()
-                state = pieceId?.let { playPieceMove(snapshot, it) } ?: engine.skipTurn(snapshot)
+                if (pieceId == null) {
+                    state = engine.skipTurn(snapshot)
+                } else {
+                    scope.launch {
+                        state = playPieceMove(snapshot, pieceId)
+                    }
+                }
             }
         } else {
             moveCountdown = 0
@@ -840,29 +852,28 @@ private fun SeatDiceTimer(
     )
     Box(
         modifier = Modifier
-            .size(if (isActive) 54.dp else 36.dp)
+            .size(if (isActive) 76.dp else 44.dp)
             .shadow(if (isActive) 12.dp else 4.dp, RoundedCornerShape(12.dp))
-            .graphicsLayer(
-                rotationZ = animatedSpin,
-                rotationY = animatedSpin % 42f,
-                rotationX = (animatedSpin * 0.45f) % 28f,
-                scaleX = if (isDiceRolling) 1.04f else 1f,
-                scaleY = if (isDiceRolling) 1.04f else 1f,
-            )
-            .clip(RoundedCornerShape(12.dp))
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         DiceFace(
             value = displayedDice,
             active = isActive,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .size(if (isActive) 62.dp else 38.dp)
+                .graphicsLayer(
+                    rotationZ = animatedSpin,
+                    translationY = if (isDiceRolling) -5f else 0f,
+                    scaleX = if (isDiceRolling) 1.08f else 1f,
+                    scaleY = if (isDiceRolling) 1.08f else 1f,
+                ),
         )
         if (countdown > 0 && isActive) {
             CountdownClock(
                 remaining = countdown,
                 total = countdownTotal,
-                modifier = Modifier.matchParentSize(),
+                modifier = Modifier.size(74.dp),
             )
         }
     }
