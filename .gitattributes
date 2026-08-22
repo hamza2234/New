@@ -1,0 +1,1 @@
+artifacts/zain-iraq/*.apk filter=lfs diff=lfs merge=lfs -text
