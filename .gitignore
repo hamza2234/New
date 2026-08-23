@@ -1,0 +1,13 @@
+# Gradle
+.gradle/
+build/
+app/build/
+
+# Android / IDE
+local.properties
+*.iml
+.idea/
+captures/
+
+# JVM crash/heap dumps
+*.hprof
