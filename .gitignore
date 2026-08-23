@@ -8,3 +8,6 @@ local.properties
 *.iml
 .idea/
 captures/
+
+# JVM crash/heap dumps
+*.hprof
