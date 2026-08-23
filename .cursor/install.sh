@@ -27,8 +27,13 @@ fi
 
 SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 
-# Accept all SDK licenses so Gradle's Android plugin can (re)install packages non-interactively.
+# Accept all SDK licenses so Gradle's Android plugin can (re)install packages
+# non-interactively. `yes` gets SIGPIPE (exit 141) once sdkmanager stops reading
+# stdin, so disable pipefail here: the pipeline status then reflects sdkmanager
+# alone (still caught by set -e), while the harmless SIGPIPE is ignored.
+set +o pipefail
 yes | "$SDKMANAGER" --licenses >/dev/null
+set -o pipefail
 
 # platforms/android-34 matches compileSdk/targetSdk in app/build.gradle.kts.
 # build-tools 34.0.0 matches that SDK; 36.0.0 is what AGP 9.2.0 resolves to by default.
