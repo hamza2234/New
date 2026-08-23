@@ -12,7 +12,7 @@ This directory contains a downloaded Instagram Android package from APKPure via 
 - `com.instagram.android.xapk`
   - Original downloaded XAPK bundle
   - SHA-256: `b4a9c65e1a682ad4823d6638b1f3152306ca269d607a6f375f6d4ad625862ae9`
-- `com.instagram.android.apk`
+- `soso.apk`
   - Base APK extracted from the XAPK
   - SHA-256: `75280ab7c07dd760d7eb9cb2da50cb9de83676a5d85ed7449d03a57c0bdfffe4`
 - `config.xxhdpi.apk`
