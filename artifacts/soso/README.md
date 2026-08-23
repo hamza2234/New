@@ -1,6 +1,6 @@
-# Instagram APK
+# Soso APK
 
-This directory contains a downloaded Instagram Android package from APKPure via EFF `apkeep`.
+This directory contains the downloaded Soso Android package files.
 
 - Package: `com.instagram.android`
 - Version: `443.0.0.48.82`
@@ -9,7 +9,7 @@ This directory contains a downloaded Instagram Android package from APKPure via 
 
 ## Files
 
-- `com.instagram.android.xapk`
+- `soso.xapk`
   - Original downloaded XAPK bundle
   - SHA-256: `b4a9c65e1a682ad4823d6638b1f3152306ca269d607a6f375f6d4ad625862ae9`
 - `soso.apk`
@@ -21,4 +21,4 @@ This directory contains a downloaded Instagram Android package from APKPure via 
 - `manifest.json`
   - XAPK metadata from APKPure
 
-Instagram is distributed as a split APK bundle, so use the XAPK or install both APK split files together when sideloading.
+This package is distributed as a split APK bundle, so use the XAPK or install both APK split files together when sideloading.

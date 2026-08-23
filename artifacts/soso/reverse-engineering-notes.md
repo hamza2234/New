@@ -2,7 +2,7 @@
 
 هذا التقرير يشرح تحليلاً ثابتاً تعليمياً للملف:
 
-`artifacts/instagram/soso.apk`
+`artifacts/soso/soso.apk`
 
 الهدف هنا فهم بنية تطبيق Android من الخارج بدون تعديل التطبيق، أو تجاوز حماية، أو استخراج أسرار، أو إعادة توقيع/نشر نسخة معدلة.
 
@@ -36,7 +36,7 @@
 
 تم تنزيل التطبيق في الأصل كحزمة XAPK:
 
-- `com.instagram.android.xapk`
+- `soso.xapk`
 - `soso.apk` وهو base APK بعد الاستخراج.
 - `config.xxhdpi.apk` وهو split APK خاص بكثافة شاشة xxhdpi.
 
@@ -58,7 +58,7 @@
 - Providers: 21
 - Features: 13
 
-هذه الأرقام طبيعية نسبياً لتطبيق كبير ومعقد مثل Instagram، لأنها تعكس وجود واجهات كثيرة، خدمات خلفية، إشعارات، مشاركة، كاميرا، رسائل، وميزات متعددة.
+هذه الأرقام طبيعية نسبياً لتطبيق كبير ومعقد، لأنها تعكس وجود واجهات كثيرة، خدمات خلفية، إشعارات، مشاركة، كاميرا، رسائل، وميزات متعددة.
 
 ## تصنيف الصلاحيات المهمة
 
@@ -145,8 +145,8 @@
 ## أوامر آمنة مستخدمة للتحقق
 
 ```bash
-file artifacts/instagram/soso.apk
-sha256sum artifacts/instagram/soso.apk
+file artifacts/soso/soso.apk
+sha256sum artifacts/soso/soso.apk
 ```
 
 وتم استخدام `apkutils2` لقراءة metadata من الـmanifest بدون تفكيك أو تعديل التطبيق.
