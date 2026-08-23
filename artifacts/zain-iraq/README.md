@@ -2,7 +2,7 @@
 
 This directory contains a downloaded APK for the Zain Iraq Android app.
 
-- File: `mobi.foo.zain.apk`
+- File: `mobi.foo.zain-6.5.2.apk`
 - Package: `mobi.foo.zain`
 - Version: `6.5.2`
 - Version code: `2400`
@@ -11,5 +11,7 @@ This directory contains a downloaded APK for the Zain Iraq Android app.
 - Signing certificate SHA-256: `98:7F:61:91:03:DE:49:41:5F:DB:A3:5C:33:62:41:3E:EF:5F:51:64:68:21:93:8F:2D:49:2D:0C:89:16:76:11`
 - Reference Play Store listing: https://play.google.com/store/apps/details?id=mobi.foo.zain
 - Download source used: Huawei AppGallery via EFF `apkeep`
+
+Google Play currently lists Zain Iraq as version `6.5.4`, but Google Play did not provide a direct APK download in this environment without account/token credentials. The accessible Huawei AppGallery source returned version `6.5.2`.
 
 The APK is stored through Git LFS because it is larger than GitHub's normal file size limit.
