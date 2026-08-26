@@ -33,14 +33,14 @@ HW = "https://circuitbitapp.com/api_data/api_link/hardware_solution.php"
 DIAGRAM = "https://circuitbitapp.com/api_data/api_link/diagram.php"
 PLACEHOLDER_WH = (900, 400)
 MIN_REAL = 20_000
-WORKERS = 2
-RETRIES = 2
-# CircuitBit IP-bans this VM after TLS floods. Probe once, then wait;
-# extra retries on SSL timeout keep the ban alive.
+WORKERS = 6
+RETRIES = 3
+# Direct IP is banned; with SOCKS retry catalog quickly instead of parking 4h.
 CATALOG_RETRY_S = 14400
 TLS_PROBE_URL = "https://circuitbitapp.com/"
-# Optional egress: socks5h://127.0.0.1:25344 (Cloudflare WARP via wireproxy)
+# Optional egress: socks5h://127.0.0.1:25344 or comma-separated pool
 CURL_PROXY = (os.environ.get("CB_CURL_PROXY") or "").strip()
+PROXY_POOL = [p.strip() for p in CURL_PROXY.split(",") if p.strip()]
 
 PRIORITY = ["SAMSUNG", "INFINIX", "VIVO"]
 PDF_COMPANY = {
@@ -126,9 +126,9 @@ def is_original(data: bytes) -> bool:
 
 
 def curl_proxy_args() -> list[str]:
-    if not CURL_PROXY:
+    if not PROXY_POOL:
         return []
-    return ["--proxy", CURL_PROXY]
+    return ["--proxy", random.choice(PROXY_POOL)]
 
 
 def _is_tls_block(err: str) -> bool:
@@ -153,9 +153,9 @@ def tls_up() -> bool:
         "%{http_code}",
         "--http1.1",
         "--connect-timeout",
-        "8",
+        "20" if CURL_PROXY else "8",
         "--max-time",
-        "12",
+        "25" if CURL_PROXY else "12",
         "-k",
         "-A",
         UA,
@@ -163,7 +163,7 @@ def tls_up() -> bool:
         TLS_PROBE_URL,
     ]
     try:
-        p = subprocess.run(cmd, capture_output=True, timeout=15)
+        p = subprocess.run(cmd, capture_output=True, timeout=40 if CURL_PROXY else 15)
         code = (p.stdout or b"").decode("utf-8", "replace").strip()
         ok = p.returncode == 0 and code.isdigit() and code != "000"
         stats["tls"] = f"up http={code}" if ok else f"blocked curl={p.returncode} http={code or '000'}"
@@ -175,6 +175,9 @@ def tls_up() -> bool:
 
 def wait_until_tls(brand: str) -> None:
     """Do not hammer the catalog while this VM's IP is TLS-blocked."""
+    if PROXY_POOL:
+        stats["tls"] = f"proxy pool={len(PROXY_POOL)}"
+        return
     if tls_up():
         return
     while True:
@@ -201,7 +204,7 @@ def http_get(url: str, timeout: int = 180) -> bytes:
             "--http1.1",
             "-L",
             "--connect-timeout",
-            "8",
+            "20" if CURL_PROXY else "8",
             "--max-time",
             str(max(15, timeout)),
             "-A",
@@ -385,7 +388,8 @@ def download_hw_one(job: dict, idx: int, total: int) -> None:
                 time.sleep(0.3)
                 continue
             body = http_get(
-                HW + "?action=serve&node=" + urllib.parse.quote(serve), timeout=180
+                HW + "?action=serve&node=" + urllib.parse.quote(serve),
+                timeout=420 if CURL_PROXY else 180,
             )
             if png_size(body) == PLACEHOLDER_WH:
                 last = "placeholder"
@@ -604,7 +608,7 @@ def main() -> int:
     brands = only or brand_order()
     log(
         f"START brands={brands} workers={WORKERS} catalog_retry={CATALOG_RETRY_S}s "
-        f"proxy={'on' if CURL_PROXY else 'off'}"
+        f"proxy={'on:'+','.join(PROXY_POOL) if PROXY_POOL else 'off'}"
     )
     write_status()
     initial = int(os.environ.get("CB_INITIAL_SLEEP", "0") or "0")
@@ -624,7 +628,7 @@ def main() -> int:
                 jobs = process_brand_incremental(brand)
                 break
             except Exception as e:
-                wait = CATALOG_RETRY_S if _is_tls_block(str(e)) else 180
+                wait = 8 if PROXY_POOL else (CATALOG_RETRY_S if _is_tls_block(str(e)) else 180)
                 log(
                     f"CATALOG FAIL {brand}: {e} — retry in {wait}s, will not skip this company"
                 )
