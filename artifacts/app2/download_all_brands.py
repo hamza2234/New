@@ -226,7 +226,9 @@ def http_get(url: str, timeout: int = 180) -> bytes:
             last = RuntimeError(f"curl {p.returncode} {err or 'empty body'}")
         except Exception as e:
             last = e
-        if _is_tls_block(str(last)):
+        # Direct IP: SSL timeout is the VM ban — abort this call.
+        # SOCKS pool: same error is a flaky WARP hop — retry another proxy.
+        if _is_tls_block(str(last)) and not PROXY_POOL:
             raise RuntimeError(str(last))
         if attempt == 0 or attempt == RETRIES - 1:
             log(f"HTTP retry {attempt+1}/{RETRIES}: {last} {url[:90]}")
@@ -290,7 +292,8 @@ def list_items(brand: str | None = None, node: str | None = None) -> list[dict]:
         url = HW + "?action=list&brand=" + urllib.parse.quote(brand)
     else:
         url = HW + "?action=list&node=" + urllib.parse.quote(node or "")
-    data = json.loads(http_get(url, timeout=25))
+    # WARP LIST often needs >25s; a short timeout restarts the whole brand walk.
+    data = json.loads(http_get(url, timeout=90 if PROXY_POOL else 25))
     if isinstance(data, dict) and data.get("error"):
         raise RuntimeError(str(data["error"]))
     return list(data.get("items") or [])
@@ -332,7 +335,19 @@ def process_brand_incremental(brand: str) -> list[dict]:
     def rec(node: str | None, path: list[str]) -> None:
         label = " / ".join(path) or brand
         log(f"LIST {brand} {label}")
-        items = list_items(brand=brand) if node is None else list_items(node=node)
+        items: list[dict] | None = None
+        last_err: Exception | None = None
+        for attempt in range(5):
+            try:
+                items = list_items(brand=brand) if node is None else list_items(node=node)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                log(f"LIST retry {attempt+1}/5 {brand} {label}: {e}")
+                time.sleep(1.2 * (attempt + 1))
+        if items is None:
+            raise last_err or RuntimeError(f"LIST failed {brand} {label}")
         files = [i for i in items if i.get("type") == "file" and i.get("node")]
         folders = [i for i in items if i.get("type") == "folder" and i.get("node")]
         log(f"LIST {brand} {label}: folders={len(folders)} files={len(files)}")
