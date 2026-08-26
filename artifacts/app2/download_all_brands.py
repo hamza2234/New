@@ -37,7 +37,7 @@ WORKERS = 2
 RETRIES = 2
 # CircuitBit IP-bans this VM after TLS floods. Probe once, then wait;
 # extra retries on SSL timeout keep the ban alive.
-CATALOG_RETRY_S = 3600
+CATALOG_RETRY_S = 14400
 TLS_PROBE_URL = "https://circuitbitapp.com/"
 
 PRIORITY = ["SAMSUNG", "INFINIX", "VIVO"]
