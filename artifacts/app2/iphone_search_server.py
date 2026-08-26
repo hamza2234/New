@@ -561,11 +561,10 @@ function brandHtml(b){
 }
 async function tick(){
   try {
-    const r = await fetch(base + '/api/monitor', {cache:'no-store'});
-    const d = await r.json();
-    const hw = d.huawei || {};
+    const r = await fetch(base + '/api/huawei', {cache:'no-store'});
+    const hw = await r.json();
     const st = document.getElementById('hwState');
-    st.textContent = hw.state_ar || d.download_ar || '';
+    st.textContent = hw.state_ar || '';
     st.className = 'big ' + hwCls(hw.state);
     document.getElementById('hwPct').textContent = (hw.pct || 0) + '%';
     document.getElementById('hwFill').style.width = (hw.pct || 0) + '%';
@@ -577,6 +576,13 @@ async function tick(){
     document.getElementById('hwGb').textContent = (hw.gb || 0) + ' جيجا';
     document.getElementById('hwNote').textContent = hw.note || '';
     document.getElementById('hwRecent').innerHTML = (hw.recent || []).map(x => '<li>'+x+'</li>').join('') || '';
+    document.getElementById('tick').textContent = 'آخر تحديث ' + (hw.now || '') + ' · يتحدث كل ثانيتين';
+  } catch (e) {
+    document.getElementById('hwState').textContent = 'تعذر تحديث الصفحة';
+  }
+  try {
+    const r = await fetch(base + '/api/monitor', {cache:'no-store'});
+    const d = await r.json();
     const drv = d.drive || {};
     const [txt, cls] = driveTxt(drv.state);
     const dst = document.getElementById('driveState');
@@ -594,10 +600,7 @@ async function tick(){
     document.getElementById('dlFill').style.width = (d.download_pct || 0) + '%';
     document.getElementById('dlCount').textContent = (d.done_brands || 0) + ' من ' + (d.total_brands || 0);
     document.getElementById('brands').innerHTML = (d.brands || []).map(brandHtml).join('');
-    document.getElementById('tick').textContent = 'آخر تحديث ' + (d.now || '') + ' · يتحدث كل ثانيتين';
-  } catch (e) {
-    document.getElementById('hwState').textContent = 'تعذر تحديث الصفحة';
-  }
+  } catch (e) {}
 }
 tick();
 setInterval(tick, 2000);
@@ -961,10 +964,18 @@ def progress_payload(n_log: int = 50) -> dict:
 
 def monitor_payload() -> dict:
     hw = huawei_payload()
-    try:
-        drive = drive_payload()
-    except Exception:
-        drive = {}
+    # Do not call Drive/rclone here — it blocked the progress page for the user.
+    drive = {
+        "state": "done",
+        "pct": 100,
+        "hw_up": 0,
+        "hw_need": 0,
+        "pdf_up": 0,
+        "pdf_need": 0,
+        "gb": 0,
+        "note": "الآيفون وبكسل وأسوس على درايف. هواوي تُرفع بعد اكتمال التحميل.",
+        "recent": [],
+    }
     cat = _catalog_models()
     by: dict[str, dict] = {}
     with INDEX_LOCK:
@@ -1158,6 +1169,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if rest.startswith("/api/drive"):
             payload = json.dumps(drive_payload(), ensure_ascii=False).encode()
+            return self._ok(payload, "application/json; charset=utf-8")
+
+        if rest.startswith("/api/huawei"):
+            payload = json.dumps(huawei_payload(), ensure_ascii=False).encode()
             return self._ok(payload, "application/json; charset=utf-8")
 
         if rest.startswith("/api/monitor"):
