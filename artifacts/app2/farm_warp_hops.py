@@ -363,7 +363,7 @@ def main() -> int:
             fresh = [n for n in started if n in live]
             ok_new: dict[int, int] = {}
             for i in range(0, len(fresh), 8):
-                batch = fresh[i : i + 3]
+                batch = fresh[i : i + 8]
                 with ThreadPoolExecutor(max_workers=len(batch)) as ex:
                     futs = {ex.submit(handshake_ok, port_for(n)): n for n in batch}
                     hs_ok = {futs[f]: f.result() for f in as_completed(futs)}
@@ -374,19 +374,20 @@ def main() -> int:
                 with ThreadPoolExecutor(max_workers=max(1, len(tls_batch))) as ex:
                     futs = {ex.submit(tls_ok, port_for(n)): n for n in tls_batch}
                     tls_map = {futs[f]: f.result() for f in as_completed(futs)}
+                need_retest = [n for n in tls_batch if not tls_map.get(n)]
+                retest = {}
+                if need_retest:
+                    with ThreadPoolExecutor(max_workers=len(need_retest)) as ex:
+                        futs = {ex.submit(tls_ok, port_for(n)): n for n in need_retest}
+                        retest = {futs[f]: f.result() for f in as_completed(futs)}
                 for n in tls_batch:
-                    if tls_map.get(n):
+                    if tls_map.get(n) or retest.get(n):
                         ok_new[n] = live[n]
-                        log(f"TLS 200 w{n} :{port_for(n)}")
+                        log(f"TLS 200 w{n} :{port_for(n)}" + (" (retest)" if not tls_map.get(n) else ""))
                     else:
-                        # isolated retest before kill
-                        if tls_ok(port_for(n)):
-                            ok_new[n] = live[n]
-                            log(f"TLS 200 w{n} :{port_for(n)} (retest)")
-                        else:
-                            log(f"TLS FAIL w{n} :{port_for(n)}")
-                            failed_until[n] = time.time() + 3600
-                            save_failed(failed_until)
+                        log(f"TLS FAIL w{n} :{port_for(n)}")
+                        failed_until[n] = time.time() + 3600
+                        save_failed(failed_until)
                 for n in batch:
                     if not hs_ok.get(n):
                         failed_until[n] = time.time() + 600
