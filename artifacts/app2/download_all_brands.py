@@ -277,8 +277,8 @@ def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
         s = q.get()
         try:
             hdr = headers()
-            connect = 8
-            read = max(12, timeout)
+            connect = 25 if PROXY_POOL else 8
+            read = max(25, timeout)
             r = s.get(
                 url,
                 headers=hdr,
