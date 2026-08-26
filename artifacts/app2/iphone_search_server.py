@@ -6,8 +6,11 @@ import json
 import mimetypes
 import os
 import re
+import tempfile
 import threading
 import time
+import zipfile
+from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -18,13 +21,114 @@ READY = Path("/workspace/artifacts/export")
 SUPPORTED = Path("/workspace/artifacts/app2/supported_models.json")
 STATUS = LIB / "STATUS.txt"
 LOG = LIB / "download.log"
+DRIVE_LOG = Path("/tmp/gdrive-iphone-upload.log")
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("IPHONE_SITE_PORT", "8765"))
 TOKEN = os.environ.get("IPHONE_SITE_TOKEN", "cbiphone")
 REINDEX_SEC = 60
+PLACEHOLDER_WH = (900, 400)
 
 INDEX: list[dict] = []
 INDEX_LOCK = threading.Lock()
+
+
+def png_wh(path: Path) -> tuple[int, int] | None:
+    try:
+        data = path.read_bytes()[:24]
+    except OSError:
+        return None
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+def is_real_file(path: Path) -> bool:
+    if not path.is_file() or path.name.endswith(".part"):
+        return False
+    if path.suffix.lower() == ".png" and png_wh(path) == PLACEHOLDER_WH:
+        return False
+    return path.stat().st_size > 0
+
+
+def brand_root(brand: str) -> Path | None:
+    for name, root in roots():
+        if name == brand:
+            return root
+    return None
+
+
+def phone_files(brand: str, model: str) -> list[tuple[Path, str]]:
+    """Original PNG+PDF for one phone. Arc names: BRAND/model/filename."""
+    if not brand or not model or "/" in model or "\\" in model or model in (".", ".."):
+        return []
+    root = brand_root(brand)
+    if root is None:
+        return []
+    out: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+    used_names: set[str] = set()
+    for folder_name in ("Hardware", "PDF"):
+        folder = root / folder_name
+        if folder.is_symlink():
+            try:
+                folder = folder.resolve()
+            except OSError:
+                continue
+        if not folder.exists():
+            continue
+        for p in folder.rglob("*"):
+            if p.parent.name != model or not is_real_file(p):
+                continue
+            key = p.resolve()
+            if key in seen:
+                continue
+            seen.add(key)
+            name = p.name
+            if name in used_names:
+                name = f"{folder_name.lower()}_{p.name}"
+            used_names.add(name)
+            out.append((p, f"{brand}/{model}/{name}"))
+    out.sort(key=lambda x: x[1].lower())
+    return out
+
+
+def models_payload(brand: str = "", q: str = "") -> dict:
+    brand = (brand or "").strip().upper()
+    q = re.sub(r"\s+", " ", q or "").strip().lower()
+    groups: dict[tuple[str, str], dict] = {}
+    with INDEX_LOCK:
+        rows = list(INDEX)
+    for row in rows:
+        b, m = row["brand"], row["model"]
+        if brand and b.upper() != brand:
+            continue
+        if q:
+            blob = f"{b} {m}".lower()
+            if not all(p in blob for p in q.split()):
+                continue
+        key = (b, m)
+        g = groups.get(key)
+        if g is None:
+            g = {"brand": b, "model": m, "files": 0, "bytes": 0, "pdf": 0, "hardware": 0}
+            groups[key] = g
+        g["files"] += 1
+        g[row["kind"]] = g.get(row["kind"], 0) + 1
+        g["bytes"] += int(round(float(row["mb"]) * 1048576))
+    models = []
+    for g in sorted(groups.values(), key=lambda x: (x["brand"].lower(), x["model"].lower())):
+        mb = round(g["bytes"] / 1048576, 1)
+        models.append(
+            {
+                "brand": g["brand"],
+                "model": g["model"],
+                "files": g["files"],
+                "hardware": g.get("hardware", 0),
+                "pdf": g.get("pdf", 0),
+                "mb": mb,
+                "zip": f"/zip/{g['brand']}/{g['model']}.zip",
+            }
+        )
+    return {"count": len(models), "models": models[:800]}
 
 
 def safe_under(base: Path, rel: str) -> Path | None:
@@ -124,7 +228,7 @@ HTML = r"""<!DOCTYPE html>
 <body>
 <header>
   <h1>بحث ملفات CircuitBit</h1>
-  <div class="meta"><a class="back" href="#" id="progLink">مخرجات التحميل المباشرة</a> · <a class="back" href="#" id="dlLink">تنزيل آيفون + سامسونج</a></div>
+  <div class="meta"><a class="back" href="#" id="driveLink">شاشة رفع درايف</a> · <a class="back" href="#" id="progLink">مخرجات التحميل</a> · <a class="back" href="#" id="dlLink">تنزيل آيفون + سامسونج</a></div>
   <input id="q" type="search" placeholder="ابحث: samsung a15 / infinix hot 30 / vivo y17 / lcd" autofocus/>
   <div class="meta" id="meta">جاري التحميل...</div>
 </header>
@@ -132,6 +236,8 @@ HTML = r"""<!DOCTYPE html>
 <script>
 const TOKEN = location.pathname.split('/').filter(Boolean)[0] || '';
 const base = TOKEN ? '/' + TOKEN : '';
+const driveLink = document.getElementById('driveLink');
+if (driveLink) driveLink.href = base + '/drive';
 const progLink = document.getElementById('progLink');
 if (progLink) progLink.href = base + '/progress';
 const dlLink = document.getElementById('dlLink');
@@ -188,7 +294,7 @@ PROGRESS_HTML = r"""<!DOCTYPE html>
 <body>
 <header>
   <h1>مخرجات التحميل المباشرة</h1>
-  <div class="meta">يتحدث كل 3 ثوانٍ · <a id="back" href="#">البحث</a> · <span id="tick">...</span></div>
+  <div class="meta">يتحدث كل 3 ثوانٍ · <a id="drive" href="#">شاشة رفع درايف</a> · <a id="back" href="#">البحث</a> · <span id="tick">...</span></div>
 </header>
 <pre class="status" id="status">جاري التحميل...</pre>
 <pre class="log" id="log"></pre>
@@ -196,6 +302,7 @@ PROGRESS_HTML = r"""<!DOCTYPE html>
 const TOKEN = location.pathname.split('/').filter(Boolean)[0] || '';
 const base = TOKEN ? '/' + TOKEN : '';
 document.getElementById('back').href = base + '/';
+document.getElementById('drive').href = base + '/drive';
 async function tick(){
   try {
     const r = await fetch(base + '/api/progress?n=60', {cache:'no-store'});
@@ -232,12 +339,13 @@ READY_HTML = r"""<!DOCTYPE html>
 <body>
 <h1>تنزيل المكتمل فقط</h1>
 <p class="mut">آيفون + سامسونج. مجلد لكل شركة، ومجلد لكل هاتف (صور + PDF). فكّ الملف بـ 7-Zip أو WinRAR.</p>
-<p class="mut"><a href="#" id="back">البحث</a> · <a href="#" id="prog">المخرجات</a></p>
+<p class="mut"><a href="#" id="back">البحث</a> · <a href="#" id="drive">شاشة رفع درايف</a> · <a href="#" id="prog">المخرجات</a></p>
 <div class="card" id="box">جاري فحص الأرشيف...</div>
 <script>
 const TOKEN = location.pathname.split('/').filter(Boolean)[0] || '';
 const base = TOKEN ? '/' + TOKEN : '';
 document.getElementById('back').href = base + '/';
+document.getElementById('drive').href = base + '/drive';
 document.getElementById('prog').href = base + '/progress';
 async function go(){
   const r = await fetch(base + '/api/ready', {cache:'no-store'});
@@ -254,6 +362,202 @@ setInterval(go, 5000);
 </body>
 </html>
 """
+
+
+DRIVE_HTML = r"""<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>رفع الآيفون إلى Google Drive</title>
+<style>
+  :root { --bg:#0b1016; --card:#151d28; --txt:#eef3f8; --mut:#9bb0c3; --acc:#5ee0a0; --bar:#3d9cf0; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Tahoma,sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:18px 16px 8px; }
+  h1 { font-size:22px; margin:0 0 6px; }
+  .mut { color:var(--mut); font-size:14px; }
+  a { color:var(--bar); }
+  .card { background:var(--card); border-radius:16px; padding:16px; margin:12px 16px; }
+  .big { font-size:28px; font-weight:700; }
+  .bar { height:16px; background:#0e1620; border-radius:99px; overflow:hidden; margin:12px 0 6px; }
+  .bar > span { display:block; height:100%; background:linear-gradient(90deg,#3d9cf0,#5ee0a0); width:0%; transition:width .4s; }
+  .row { display:flex; justify-content:space-between; gap:8px; margin:8px 0; font-size:15px; }
+  .ok { color:var(--acc); } .run { color:#f0c14d; } .bad { color:#ff8a8a; }
+  ul { margin:8px 0 0; padding-right:18px; font-size:13px; color:var(--mut); }
+  li { margin:4px 0; word-break:break-word; }
+</style>
+</head>
+<body>
+<header>
+  <h1>شاشة رفع درايف</h1>
+  <div class="mut">مجلد <b>Phone X</b> · آيفون + آيباد · يتحدث كل 3 ثوانٍ</div>
+  <div class="mut" style="margin-top:8px"><a href="#" id="back">البحث</a> · <a href="#" id="prog">سجل التحميل</a></div>
+</header>
+<div class="card">
+  <div id="state" class="big run">جاري القراءة...</div>
+  <div class="bar"><span id="fill"></span></div>
+  <div class="row"><span>التقدم الكلي</span><span id="pct">0%</span></div>
+  <div class="row"><span>صور الهاردوير</span><span id="hw">—</span></div>
+  <div class="row"><span>ملفات PDF</span><span id="pdf">—</span></div>
+  <div class="row"><span>الحجم المرفوع</span><span id="gb">—</span></div>
+  <div class="mut" id="note"></div>
+</div>
+<div class="card">
+  <div>آخر الملفات المرفوعة</div>
+  <ul id="recent"></ul>
+</div>
+<script>
+const TOKEN = location.pathname.split('/').filter(Boolean)[0] || '';
+const base = TOKEN ? '/' + TOKEN : '';
+document.getElementById('back').href = base + '/';
+document.getElementById('prog').href = base + '/progress';
+function arState(s){
+  if (s === 'done') return ['اكتمل الرفع إلى درايف', 'ok'];
+  if (s === 'pdf') return ['جارٍ رفع ملفات PDF', 'run'];
+  if (s === 'hardware') return ['جارٍ رفع صور الهاردوير', 'run'];
+  if (s === 'stopped') return ['توقف الرفع — سأعيد المحاولة', 'bad'];
+  return ['جارٍ الرفع إلى Google Drive', 'run'];
+}
+async function tick(){
+  try {
+    const r = await fetch(base + '/api/drive', {cache:'no-store'});
+    const d = await r.json();
+    const [txt, cls] = arState(d.state);
+    const st = document.getElementById('state');
+    st.textContent = txt;
+    st.className = 'big ' + cls;
+    document.getElementById('fill').style.width = (d.pct || 0) + '%';
+    document.getElementById('pct').textContent = (d.pct || 0) + '%';
+    document.getElementById('hw').textContent = (d.hw_up || 0) + ' من ' + (d.hw_need || 0);
+    document.getElementById('pdf').textContent = (d.pdf_up || 0) + ' من ' + (d.pdf_need || 0);
+    document.getElementById('gb').textContent = (d.gb || 0) + ' جيجا';
+    document.getElementById('note').textContent = d.note || '';
+    document.getElementById('recent').innerHTML = (d.recent || []).map(x => '<li>'+x+'</li>').join('') || '<li>لا شيء بعد</li>';
+  } catch (e) {
+    document.getElementById('state').textContent = 'تعذر تحديث الصفحة';
+  }
+}
+tick();
+setInterval(tick, 3000);
+</script>
+</body>
+</html>
+"""
+
+
+_drive_size_cache: dict = {"t": 0.0, "hw": 0, "pdf": 0, "bytes": 0}
+
+
+def _rclone_running() -> bool:
+    try:
+        import subprocess
+
+        p = subprocess.run(["pgrep", "-a", "rclone"], capture_output=True, text=True, timeout=2)
+        return "gdrive_user:" in (p.stdout or "")
+    except Exception:
+        return False
+
+
+def _count_disk() -> tuple[int, int]:
+    hw = IPHONE / "Hardware"
+    pdf = IPHONE / "PDF"
+    n_hw = sum(1 for p in hw.rglob("*") if p.is_file() and p.suffix.lower() in {".png", ".jpg"}) if hw.exists() else 0
+    n_pdf = sum(1 for p in pdf.rglob("*.pdf") if p.is_file()) if pdf.exists() else 0
+    return n_hw, n_pdf
+
+
+def _parse_drive_log() -> dict:
+    copied = 0
+    errors = 0
+    recent: list[str] = []
+    hw_done = pdf_done = False
+    text = DRIVE_LOG.read_text(encoding="utf-8", errors="replace") if DRIVE_LOG.exists() else ""
+    for line in text.splitlines():
+        if "Copied (new)" in line or "Copied (replaced)" in line:
+            copied += 1
+            name = line.split("INFO  :", 1)[-1].split(":", 1)[0].strip()
+            if name:
+                recent.append(name)
+        if " ERROR " in line or "Failed to copy" in line:
+            errors += 1
+        if "HARDWARE_EXIT=" in line:
+            hw_done = line.split("HARDWARE_EXIT=", 1)[-1].split()[0] == "0"
+        if "PDF_EXIT=" in line:
+            pdf_done = line.split("PDF_EXIT=", 1)[-1].split()[0] == "0"
+    return {
+        "copied": copied,
+        "errors": errors,
+        "recent": recent[-8:][::-1],
+        "hw_done": hw_done,
+        "pdf_done": pdf_done,
+        "has_pdf_phase": "gdrive_user:PDF" in text or "PDF_EXIT=" in text,
+    }
+
+
+def drive_payload() -> dict:
+    hw_need, pdf_need = _count_disk()
+    parsed = _parse_drive_log()
+    running = _rclone_running()
+    now = time.time()
+    if now - float(_drive_size_cache["t"]) > 12:
+        try:
+            import subprocess
+
+            def _sz(sub: str) -> tuple[int, int]:
+                p = subprocess.run(
+                    ["rclone", "size", f"gdrive_user:{sub}", "--json"],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                if p.returncode != 0 or not (p.stdout or "").strip():
+                    return 0, 0
+                d = json.loads(p.stdout)
+                return int(d.get("count") or 0), int(d.get("bytes") or 0)
+
+            hw_n, hw_b = _sz("Hardware")
+            pdf_n, pdf_b = _sz("PDF")
+            _drive_size_cache.update(t=now, hw=hw_n, pdf=pdf_n, bytes=hw_b + pdf_b)
+        except Exception:
+            pass
+    hw_up = int(_drive_size_cache.get("hw") or 0)
+    pdf_up = int(_drive_size_cache.get("pdf") or 0)
+    total_need = max(1, hw_need + pdf_need)
+    total_up = min(total_need, hw_up + pdf_up)
+    pct = round(100.0 * total_up / total_need)
+    if parsed["pdf_done"] and parsed["hw_done"]:
+        state = "done"
+        note = "افتح تطبيق Drive → مجلد Phone X"
+    elif running and parsed["has_pdf_phase"]:
+        state = "pdf"
+        note = "الصور اكتملت تقريباً — بدأ رفع PDF"
+    elif running:
+        state = "hardware"
+        note = "الرفع إلى حسابك مباشرة داخل Phone X"
+    elif parsed["copied"] and not running:
+        state = "stopped"
+        note = "توقف rclone — سيتم استئنافه إن لم يكتمل"
+    else:
+        state = "hardware"
+        note = "جاري تجهيز الرفع"
+    if parsed["errors"]:
+        note += f" · أخطاء: {parsed['errors']}"
+    return {
+        "state": state,
+        "pct": pct,
+        "hw_up": hw_up,
+        "hw_need": hw_need,
+        "pdf_up": pdf_up,
+        "pdf_need": pdf_need,
+        "gb": round(int(_drive_size_cache.get("bytes") or 0) / 1e9, 2),
+        "copied_log": parsed["copied"],
+        "errors": parsed["errors"],
+        "running": running,
+        "recent": parsed["recent"],
+        "note": note,
+        "now": time.strftime("%H:%M:%S UTC", time.gmtime()),
+    }
 
 
 def _catalog_models() -> dict[str, int]:
@@ -420,6 +724,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._ok(HTML.encode())
         if path in (prefix + "/progress", prefix + "/progress/"):
             return self._ok(PROGRESS_HTML.encode())
+        if path in (prefix + "/drive", prefix + "/drive/"):
+            return self._ok(DRIVE_HTML.encode())
         if path in (prefix + "/ready", prefix + "/ready/"):
             return self._ok(READY_HTML.encode())
         if not path.startswith(prefix + "/") and path != prefix:
@@ -428,6 +734,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if rest.startswith("/api/ready"):
             payload = json.dumps(ready_payload(), ensure_ascii=False).encode()
+            return self._ok(payload, "application/json; charset=utf-8")
+
+        if rest.startswith("/api/drive"):
+            payload = json.dumps(drive_payload(), ensure_ascii=False).encode()
             return self._ok(payload, "application/json; charset=utf-8")
 
         if rest.startswith("/ready/"):
