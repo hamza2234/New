@@ -215,13 +215,9 @@ def _rebuild_sessions() -> queue.Queue:
     global _session_q
     q: queue.Queue = queue.Queue()
     n = max(1, PER_PROXY)
-    proxies = list(PROXY_POOL)
-    if proxies:
-        for p in proxies:
-            for _ in range(n):
-                q.put(_new_session(p))
-    else:
-        q.put(_new_session(None))
+    for p in list(PROXY_POOL):
+        for _ in range(n):
+            q.put(_new_session(p))
     _session_q = q
     return q
 
@@ -229,12 +225,23 @@ def _rebuild_sessions() -> queue.Queue:
 def _session_pool() -> queue.Queue:
     current_proxies()
     global _session_q
+    while not PROXY_POOL:
+        wait_until_tls("sessions")
+        current_proxies()
     if _session_q is not None:
         return _session_q
     with _proxy_lock:
         if _session_q is not None:
             return _session_q
-        return _rebuild_sessions()
+        if not PROXY_POOL:
+            _session_q = None
+        else:
+            q = _rebuild_sessions()
+            if q.empty():
+                _session_q = None
+            else:
+                return q
+    return _session_pool()
 
 
 def curl_proxy_args(proxy: str | None = None) -> list[str]:
@@ -793,7 +800,8 @@ def download_jobs(jobs: list[dict], brand: str) -> None:
         return
     models = {j["model"] for j in pending}
     nproxy = max(1, len(current_proxies()))
-    workers = min(WORKERS, len(pending))
+    # Too many workers on one WARP exit burns it; scale with live hops.
+    workers = min(WORKERS, len(pending), max(8, 8 * nproxy))
     log(f"{brand} downloading {len(pending)} files across {len(models)} models workers={workers} hops={nproxy}")
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [

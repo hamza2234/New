@@ -21,6 +21,9 @@ READY = Path("/workspace/artifacts/export")
 SUPPORTED = Path("/workspace/artifacts/app2/supported_models.json")
 STATUS = LIB / "STATUS.txt"
 LOG = LIB / "download.log"
+HUAWEI_LOG = Path("/tmp/huawei_fill.log")
+HUAWEI_STATE = Path("/tmp/huawei_fill_state.json")
+HOP_LIVE = Path("/tmp/egress/live_proxies.txt")
 DRIVE_LOG = Path("/tmp/gdrive-fit-upload.log")
 IPHONE_DRIVE_LOG = Path("/tmp/gdrive-iphone-upload.log")
 HOST = "0.0.0.0"
@@ -486,8 +489,8 @@ MONITOR_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>مراقبة التقدم</h1>
-  <div class="mut" id="tick">يتحدث كل 3 ثوانٍ</div>
+  <h1>تحميل هواوي الآن</h1>
+  <div class="mut" id="tick">يتحدث كل ثانيتين</div>
   <div class="nav">
     <a href="#" id="drive">رفع درايف</a>
     <a href="#" id="search">البحث في الملفات</a>
@@ -495,6 +498,20 @@ MONITOR_HTML = r"""<!DOCTYPE html>
     <a href="#" id="ready">تنزيل الأرشيف</a>
   </div>
 </header>
+<div class="card">
+  <h2>هواوي من سيرفر CircuitBit</h2>
+  <div id="hwState" class="big run">جاري القراءة...</div>
+  <div class="pct" id="hwPct">—</div>
+  <div class="bar"><span id="hwFill"></span></div>
+  <div class="row"><span>صور الهاردوير</span><span id="hwFiles">—</span></div>
+  <div class="row"><span>الموديلات</span><span id="hwModels">—</span></div>
+  <div class="row"><span>ملفات PDF</span><span id="hwPdf">—</span></div>
+  <div class="row"><span>السرعة (آخر دقيقة)</span><span id="hwRate">—</span></div>
+  <div class="row"><span>هوبات WARP</span><span id="hwHops">—</span></div>
+  <div class="row"><span>الحجم على القرص</span><span id="hwGb">—</span></div>
+  <div class="mut" id="hwNote"></div>
+  <ul id="hwRecent" style="margin:10px 0 0;padding-right:18px;color:var(--mut);font-size:13px"></ul>
+</div>
 <div class="card">
   <h2>رفع إلى جوجل درايف</h2>
   <div id="driveState" class="big run">جاري القراءة...</div>
@@ -506,7 +523,7 @@ MONITOR_HTML = r"""<!DOCTYPE html>
   <div class="mut" id="driveNote"></div>
 </div>
 <div class="card">
-  <h2>تحميل الشركات من CircuitBit</h2>
+  <h2>باقي الشركات</h2>
   <div id="dlState" class="big run">جاري القراءة...</div>
   <div class="mut" id="dlNote"></div>
   <div class="bar"><span id="dlFill"></span></div>
@@ -527,8 +544,14 @@ function driveTxt(s){
   if (s === 'stopped') return ['توقف الرفع', 'bad'];
   return ['جارٍ الرفع', 'run'];
 }
+function hwCls(s){
+  if (s === 'run' || s === 'pdf') return 'ok';
+  if (s === 'wait_hop') return 'run';
+  if (s === 'done') return 'ok';
+  return 'bad';
+}
 function brandHtml(b){
-  const cls = b.state === 'done' ? 'ok' : (b.state === 'paused' ? 'run' : 'wait');
+  const cls = (b.state === 'done' || b.state === 'run' || b.state === 'pdf') ? 'ok' : (b.state === 'paused' || b.state === 'wait_hop' ? 'run' : 'wait');
   const mini = b.state === 'done' ? 'done' : '';
   return `<div class="brand">
     <div class="top"><b>${b.ar}</b><span class="${cls}">${b.state_ar} · ${b.pct}%</span></div>
@@ -540,30 +563,44 @@ async function tick(){
   try {
     const r = await fetch(base + '/api/monitor', {cache:'no-store'});
     const d = await r.json();
+    const hw = d.huawei || {};
+    const st = document.getElementById('hwState');
+    st.textContent = hw.state_ar || d.download_ar || '';
+    st.className = 'big ' + hwCls(hw.state);
+    document.getElementById('hwPct').textContent = (hw.pct || 0) + '%';
+    document.getElementById('hwFill').style.width = (hw.pct || 0) + '%';
+    document.getElementById('hwFiles').textContent = (hw.png || 0) + ' من ' + (hw.server || 0) + ' · متبقي ' + (hw.left || 0);
+    document.getElementById('hwModels').textContent = (hw.models || 0) + ' من ' + (hw.catalog_models || 0);
+    document.getElementById('hwPdf').textContent = String(hw.pdf || 0);
+    document.getElementById('hwRate').textContent = (hw.rate_per_min || 0) + ' ملف/دقيقة';
+    document.getElementById('hwHops').textContent = String(hw.hops || 0);
+    document.getElementById('hwGb').textContent = (hw.gb || 0) + ' جيجا';
+    document.getElementById('hwNote').textContent = hw.note || '';
+    document.getElementById('hwRecent').innerHTML = (hw.recent || []).map(x => '<li>'+x+'</li>').join('') || '';
     const drv = d.drive || {};
     const [txt, cls] = driveTxt(drv.state);
-    const st = document.getElementById('driveState');
-    st.textContent = txt;
-    st.className = 'big ' + cls;
+    const dst = document.getElementById('driveState');
+    dst.textContent = txt;
+    dst.className = 'big ' + cls;
     document.getElementById('drivePct').textContent = (drv.pct || 0) + '%';
     document.getElementById('driveFill').style.width = (drv.pct || 0) + '%';
     document.getElementById('hw').textContent = (drv.hw_up || 0) + ' من ' + (drv.hw_need || 0);
     document.getElementById('pdf').textContent = (drv.pdf_up || 0) + ' من ' + (drv.pdf_need || 0);
     document.getElementById('gb').textContent = (drv.gb || 0) + ' جيجا';
     document.getElementById('driveNote').textContent = drv.note || '';
-    document.getElementById('dlState').textContent = d.download_ar || '';
-    document.getElementById('dlState').className = 'big ' + (d.download_paused ? 'run' : 'ok');
-    document.getElementById('dlNote').textContent = d.download_note || '';
+    document.getElementById('dlState').textContent = (d.done_brands || 0) + ' شركات مكتملة';
+    document.getElementById('dlState').className = 'big ok';
+    document.getElementById('dlNote').textContent = 'هواوي هي الجاري تحميلها الآن. سامسونج وإنفينكس وفيفو لن تُرفع إلا بطلبك.';
     document.getElementById('dlFill').style.width = (d.download_pct || 0) + '%';
     document.getElementById('dlCount').textContent = (d.done_brands || 0) + ' من ' + (d.total_brands || 0);
     document.getElementById('brands').innerHTML = (d.brands || []).map(brandHtml).join('');
-    document.getElementById('tick').textContent = 'آخر تحديث ' + (d.now || '') + ' · يتحدث كل 3 ثوانٍ';
+    document.getElementById('tick').textContent = 'آخر تحديث ' + (d.now || '') + ' · يتحدث كل ثانيتين';
   } catch (e) {
-    document.getElementById('driveState').textContent = 'تعذر تحديث الصفحة';
+    document.getElementById('hwState').textContent = 'تعذر تحديث الصفحة';
   }
 }
 tick();
-setInterval(tick, 3000);
+setInterval(tick, 2000);
 </script>
 </body>
 </html>
@@ -736,6 +773,137 @@ BRAND_AR = {
     "ZTE": "زد تي إي",
 }
 DONE_BRANDS = {"SAMSUNG", "INFINIX", "VIVO", "ASUS", "GOOGLE PIXEL", "IPHONE"}
+HUAWEI_SERVER_HW = 2635
+HUAWEI_SERVER_MODELS = 140
+
+_hw_live_cache: dict = {"t": 0.0}
+
+
+def _tail_lines(path: Path, n: int) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]
+    except OSError:
+        return []
+
+
+def _proc_running(needles: tuple[str, ...]) -> bool:
+    try:
+        import subprocess
+
+        p = subprocess.run(["ps", "-eo", "args="], capture_output=True, text=True, timeout=2)
+        text = p.stdout or ""
+    except Exception:
+        return False
+    return any(n in text for n in needles)
+
+
+def _hop_urls() -> list[str]:
+    if not HOP_LIVE.exists():
+        return []
+    try:
+        return [ln.strip() for ln in HOP_LIVE.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
+    except OSError:
+        return []
+
+
+def huawei_payload() -> dict:
+    now = time.time()
+    if now - float(_hw_live_cache.get("t") or 0) < 1.5 and _hw_live_cache.get("png") is not None:
+        d = dict(_hw_live_cache)
+        d.pop("t", None)
+        return d
+    hw = LIB / "HUAWEI" / "Hardware"
+    pdf = LIB / "HUAWEI" / "PDF"
+    pngs = list(hw.rglob("*.png")) if hw.exists() else []
+    pdfs = list(pdf.rglob("*.pdf")) if pdf.exists() else []
+    models = {p.parent.name for p in pngs}
+    nbytes = 0
+    recent60 = 0
+    for p in pngs:
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        nbytes += st.st_size
+        if now - st.st_mtime < 60:
+            recent60 += 1
+    for p in pdfs:
+        try:
+            nbytes += p.stat().st_size
+        except OSError:
+            pass
+    server = HUAWEI_SERVER_HW
+    pending = None
+    try:
+        stj = json.loads(HUAWEI_STATE.read_text()) if HUAWEI_STATE.exists() else {}
+        server = int(stj.get("server") or server)
+        if stj.get("pending") is not None:
+            pending = int(stj["pending"])
+    except Exception:
+        pass
+    png_n = len(pngs)
+    left = max(0, server - png_n)
+    pct = round(100.0 * png_n / server, 1) if server else 0
+    hops = _hop_urls()
+    fill_on = _proc_running(("python3 -u /tmp/huawei_fill.py",))
+    farm_on = _proc_running(("farm_warp_hops.py",))
+    log_lines = [ln for ln in _tail_lines(HUAWEI_LOG, 12) if ln.strip()]
+    recent = []
+    for ln in reversed(log_lines):
+        if "ORIGINAL" in ln and " -> " in ln:
+            recent.append(ln.split(" -> ", 1)[-1].strip())
+        if len(recent) >= 6:
+            break
+    waiting = any("waiting for live WARP hop" in ln for ln in log_lines[-8:])
+    if fill_on and png_n >= server and left == 0:
+        state, state_ar = "pdf", "جارٍ تحميل PDF"
+    elif fill_on and waiting and not hops:
+        state, state_ar = "wait_hop", "بانتظار هوب WARP"
+    elif fill_on and hops:
+        state, state_ar = "run", "التحميل يعمل الآن"
+    elif fill_on:
+        state, state_ar = "run", "التحميل يعمل الآن"
+    elif png_n >= server:
+        state, state_ar = "done", "اكتمل التحميل من السيرفر"
+    else:
+        state, state_ar = "paused", "التحميل متوقف"
+    note = (
+        f"من السيرفر {server} صورة / {HUAWEI_SERVER_MODELS} موديل. "
+        f"متبقي {left} صورة. "
+        + ("المزرعة شغالة. " if farm_on else "المزرعة متوقفة. ")
+        + ("الهوبات: " + str(len(hops)) + ". " )
+        + "الأسماء بالإنجليزي مع عربي بين قوسين."
+    )
+    payload = {
+        "brand": "HUAWEI",
+        "ar": "هواوي",
+        "state": state,
+        "state_ar": state_ar,
+        "pct": pct,
+        "png": png_n,
+        "server": server,
+        "left": left,
+        "models": len(models),
+        "catalog_models": HUAWEI_SERVER_MODELS,
+        "pdf": len(pdfs),
+        "gb": round(nbytes / 1e9, 2),
+        "rate_per_min": recent60,
+        "hops": len(hops),
+        "fill_running": fill_on,
+        "farm_running": farm_on,
+        "waiting_hop": waiting and not hops,
+        "pending_wave": pending,
+        "recent": recent,
+        "log": log_lines[-8:],
+        "note": note,
+        "now": time.strftime("%H:%M:%S UTC", time.gmtime()),
+    }
+    _hw_live_cache.clear()
+    _hw_live_cache.update(payload)
+    _hw_live_cache["t"] = now
+    return payload
 
 
 def _catalog_models() -> dict[str, int]:
@@ -756,7 +924,10 @@ def progress_payload(n_log: int = 50) -> dict:
     n_log = max(10, min(int(n_log or 50), 200))
     status = STATUS.read_text(encoding="utf-8", errors="replace") if STATUS.exists() else ""
     lines: list[str] = []
-    if LOG.exists():
+    if HUAWEI_LOG.exists():
+        raw = HUAWEI_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = raw[-n_log:]
+    elif LOG.exists():
         raw = LOG.read_text(encoding="utf-8", errors="replace").splitlines()
         lines = raw[-n_log:]
     cat = _catalog_models()
@@ -789,18 +960,37 @@ def progress_payload(n_log: int = 50) -> dict:
 
 
 def monitor_payload() -> dict:
-    drive = drive_payload()
-    prog = progress_payload(20)
-    by = {b["brand"]: b for b in prog["brands"]}
+    hw = huawei_payload()
+    try:
+        drive = drive_payload()
+    except Exception:
+        drive = {}
     cat = _catalog_models()
+    by: dict[str, dict] = {}
+    with INDEX_LOCK:
+        for row in INDEX:
+            g = by.get(row["brand"])
+            if g is None:
+                g = {"hardware": 0, "pdf": 0, "models": set()}
+                by[row["brand"]] = g
+            if row["kind"] in ("hardware", "pdf"):
+                g[row["kind"]] += 1
+            g["models"].add(row["model"])
     brands = []
     for brand, ncat in sorted(cat.items(), key=lambda kv: BRAND_AR.get(kv[0], kv[0])):
-        b = by.get(brand) or {"hardware": 0, "models": 0, "pdf": 0}
-        models = int(b.get("models") or 0)
+        b = by.get(brand) or {"hardware": 0, "models": set(), "pdf": 0}
+        ms = b.get("models") or set()
+        models = len(ms) if not isinstance(ms, int) else int(ms)
         hardware = int(b.get("hardware") or 0)
         pdf = int(b.get("pdf") or 0)
         pct = round(100.0 * models / ncat) if ncat else 0
-        if brand in DONE_BRANDS or (ncat and models >= ncat):
+        if brand == "HUAWEI":
+            state, state_ar, pct = hw["state"], hw["state_ar"], hw["pct"]
+            models = hw["models"]
+            hardware = hw["png"]
+            pdf = hw["pdf"]
+            ncat = hw["catalog_models"]
+        elif brand in DONE_BRANDS or (ncat and models >= ncat):
             state, state_ar, pct = "done", "مكتمل", 100 if models else pct
         elif hardware > 0:
             state, state_ar = "paused", "متوقف"
@@ -819,25 +1009,22 @@ def monitor_payload() -> dict:
                 "pct": pct,
             }
         )
-    order = {"paused": 0, "done": 1, "waiting": 2}
+    order = {"run": 0, "wait_hop": 0, "pdf": 0, "paused": 1, "done": 2, "waiting": 3}
     brands.sort(key=lambda x: (order.get(x["state"], 9), x["ar"]))
     total_n = len(brands) or 1
-    paused = True
+    done_n = sum(1 for b in brands if b["state"] == "done")
+    running = hw.get("fill_running")
     return {
         "now": time.strftime("%H:%M:%S UTC", time.gmtime()),
         "drive": drive,
+        "huawei": hw,
         "brands": brands,
         "done_brands": done_n,
         "total_brands": total_n,
-        "download_pct": round(100.0 * done_n / total_n),
-        "download_paused": paused,
-        "download_ar": "التحميل متوقف الآن" if paused else "التحميل يعمل الآن",
-        "download_note": (
-            f"اكتملت {done_n} شركات من أصل {total_n}. "
-            "إنفينكس اكتملت من السيرفر (1566 صورة). "
-            "هواوي بدأت ثم توقفت بطلبك. الباقي لم يبدأ. "
-            "درايف: الآيفون موجود. إنفينكس تحتاج مساحة أكبر (~11.4 جيجا والمساحة الحرة ~9.7)."
-        ),
+        "download_pct": hw.get("pct") or 0,
+        "download_paused": not running,
+        "download_ar": hw.get("state_ar") or "",
+        "download_note": hw.get("note") or "",
     }
 
 

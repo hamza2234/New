@@ -305,8 +305,9 @@ def main() -> int:
             log(f"live={len(live)} {urls}")
 
         now = time.time()
-        # CircuitBit-test live hops at most every 45s — probing them every loop burns exits.
-        if live and (now - last_tls_check >= 45 or len(live) < TARGET_LIVE):
+        # Retest existing hops at most every 45s. Do NOT probe them every loop
+        # when the pool is short — that burned the only working WARP exit.
+        if live and now - last_tls_check >= 45:
             still: dict[int, int] = {}
             for n, pid in list(live.items()):
                 if tls_ok(port_for(n)):
@@ -320,8 +321,6 @@ def main() -> int:
                     live.pop(n, None)
                     failed_until[n] = time.time() + 3600
                     save_failed(failed_until)
-                    # Drop the dead hop from the live file immediately so
-                    # downloaders wait instead of retrying a killed SOCKS port.
                     urls = [proxy_url(port_for(k)) for k in sorted(live)]
                     write_live(urls)
                     log(f"live={len(live)} {urls}")
@@ -403,6 +402,8 @@ def main() -> int:
             urls = [proxy_url(port_for(n)) for n in sorted(live)]
             write_live(urls)
             log(f"live={len(live)} {urls}")
+            if ok_new:
+                last_tls_check = time.time()
 
         prune_extra(set(live))
         # if we are at target, sleep; if short, loop immediately
