@@ -343,7 +343,9 @@ def main() -> int:
 
         # Always mint fresh wgcf accounts when short — recycled confs are usually banned.
         if len(live) < TARGET_LIVE:
-            n_new = min(3, TARGET_LIVE - len(live) + 1)
+            n_new = min(8, TARGET_LIVE - len(live) + 2)
+            if n_new < 3:
+                n_new = 3
             batch_ids = list(range(next_n, next_n + n_new))
             next_n += n_new
             with ThreadPoolExecutor(max_workers=min(8, len(batch_ids))) as ex:
@@ -361,7 +363,7 @@ def main() -> int:
             # handshake then UA TLS; test new hops a few at a time
             fresh = [n for n in started if n in live]
             ok_new: dict[int, int] = {}
-            for i in range(0, len(fresh), 3):
+            for i in range(0, len(fresh), 8):
                 batch = fresh[i : i + 3]
                 with ThreadPoolExecutor(max_workers=len(batch)) as ex:
                     futs = {ex.submit(handshake_ok, port_for(n)): n for n in batch}
