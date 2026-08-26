@@ -357,8 +357,8 @@ def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
         s = q.get()
         try:
             hdr = headers()
-            connect = 12 if PROXY_POOL else 8
-            read = max(20, min(timeout, 40))
+            connect = 8
+            read = min(max(8, timeout), 12) if PROXY_POOL else max(20, min(timeout, 40))
             r = s.get(
                 url,
                 headers=hdr,
@@ -749,10 +749,11 @@ def download_hw_one(job: dict, idx: int, total: int) -> None:
                 last = f"no serve node {req}"
                 time.sleep(0.3)
                 continue
+            using_socks = bool(current_proxies())
             body = http_get(
                 HW + "?action=serve&node=" + urllib.parse.quote(serve),
-                timeout=25 if CURL_PROXY else 180,
-                abort_stall=bool(CURL_PROXY),
+                timeout=25 if using_socks else 180,
+                abort_stall=using_socks,
             )
             if png_size(body) == PLACEHOLDER_WH:
                 last = "placeholder"
@@ -802,8 +803,8 @@ def download_jobs(jobs: list[dict], brand: str) -> None:
         return
     models = {j["model"] for j in pending}
     nproxy = max(1, len(current_proxies()))
-    workers = min(WORKERS, max(PER_PROXY, PER_PROXY * nproxy), len(pending))
-    log(f"{brand} downloading {len(pending)} files across {len(models)} models workers={workers}")
+    workers = min(WORKERS, len(pending))
+    log(f"{brand} downloading {len(pending)} files across {len(models)} models workers={workers} hops={nproxy}")
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [
             ex.submit(download_hw_one, j, i, len(pending)) for i, j in enumerate(pending, 1)
