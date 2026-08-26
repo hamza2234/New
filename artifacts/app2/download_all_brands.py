@@ -126,7 +126,9 @@ def http_get(url: str, timeout: int = 180) -> bytes:
                 return r.read()
         except Exception as e:
             last = e
-            time.sleep(0.4 * (attempt + 1))
+            if attempt == 0 or attempt == RETRIES - 1:
+                log(f"HTTP retry {attempt+1}/{RETRIES} {type(e).__name__}: {e} {url[:90]}")
+            time.sleep(0.35 * (attempt + 1))
     raise RuntimeError(str(last))
 
 
@@ -158,12 +160,24 @@ def save_body(folder: Path, name: str, body: bytes) -> Path:
     return dest
 
 
-def hw_dir(brand: str, model: str) -> Path:
-    return LIB / safe(brand) / "Hardware" / safe(model)
+def section_dir(brand: str, section: str, path: list[str]) -> Path:
+    """library/{BRAND}/{Hardware|PDF|Bitmap}/... never mix companies."""
+    p = LIB / safe(brand) / section
+    for part in path:
+        if part:
+            p = p / safe(part)
+    return p
+
+
+def hw_dir(brand: str, path: list[str] | None = None, model: str = "") -> Path:
+    parts = list(path or [])
+    if not parts and model:
+        parts = [model]
+    return section_dir(brand, "Hardware", parts)
 
 
 def pdf_dir(brand: str, model: str) -> Path:
-    return LIB / safe(brand) / "PDF" / safe(model)
+    return section_dir(brand, "PDF", [model])
 
 
 def list_items(brand: str | None = None, node: str | None = None) -> list[dict]:
@@ -171,7 +185,7 @@ def list_items(brand: str | None = None, node: str | None = None) -> list[dict]:
         url = HW + "?action=list&brand=" + urllib.parse.quote(brand)
     else:
         url = HW + "?action=list&node=" + urllib.parse.quote(node or "")
-    data = json.loads(http_get(url, timeout=90))
+    data = json.loads(http_get(url, timeout=25))
     if isinstance(data, dict) and data.get("error"):
         raise RuntimeError(str(data["error"]))
     return list(data.get("items") or [])
@@ -181,9 +195,12 @@ def walk_brand(brand: str) -> list[dict]:
     jobs: list[dict] = []
 
     def rec(node: str | None, path: list[str]) -> None:
+        label = " / ".join(path) or brand
+        log(f"LIST {brand} {label}")
         items = list_items(brand=brand) if node is None else list_items(node=node)
         files = [i for i in items if i.get("type") == "file" and i.get("node")]
         folders = [i for i in items if i.get("type") == "folder" and i.get("node")]
+        log(f"LIST {brand} {label}: folders={len(folders)} files={len(files)}")
         if files:
             model = path[-1] if path else brand
             for f in files:
@@ -203,6 +220,41 @@ def walk_brand(brand: str) -> list[dict]:
     return jobs
 
 
+def process_brand_incremental(brand: str) -> list[dict]:
+    """List one folder, download its files immediately, then recurse."""
+    all_jobs: list[dict] = []
+
+    def rec(node: str | None, path: list[str]) -> None:
+        label = " / ".join(path) or brand
+        log(f"LIST {brand} {label}")
+        items = list_items(brand=brand) if node is None else list_items(node=node)
+        files = [i for i in items if i.get("type") == "file" and i.get("node")]
+        folders = [i for i in items if i.get("type") == "folder" and i.get("node")]
+        log(f"LIST {brand} {label}: folders={len(folders)} files={len(files)}")
+        if files:
+            model = path[-1] if path else brand
+            if brand == "IPHONE" and skip_iphone_phone(model):
+                log(f"SKIP existing iPhone phone {model}")
+            else:
+                jobs = [
+                    {
+                        "brand": brand,
+                        "model": model,
+                        "path": path,
+                        "name": f.get("name") or "file",
+                        "node": f["node"],
+                    }
+                    for f in files
+                ]
+                all_jobs.extend(jobs)
+                download_jobs(jobs, brand)
+        for fol in folders:
+            rec(fol["node"], path + [fol.get("name") or "folder"])
+
+    rec(None, [])
+    return all_jobs
+
+
 def skip_iphone_phone(model: str) -> bool:
     """iPhone phone boards are already complete; still take iPads."""
     m = model.upper()
@@ -214,7 +266,7 @@ def skip_iphone_phone(model: str) -> bool:
 
 def download_hw_one(job: dict, idx: int, total: int) -> None:
     brand, model, name, node = job["brand"], job["model"], job["name"], job["node"]
-    folder = hw_dir(brand, model)
+    folder = hw_dir(brand, job.get("path") or [model], model)
     if existing_file(folder, name):
         with stats_lock:
             stats["skip"] += 1
@@ -265,7 +317,7 @@ def download_hw_one(job: dict, idx: int, total: int) -> None:
 def download_jobs(jobs: list[dict], brand: str) -> None:
     pending = []
     for j in jobs:
-        if existing_file(hw_dir(j["brand"], j["model"]), j["name"]):
+        if existing_file(hw_dir(j["brand"], j.get("path") or [j["model"]], j["model"]), j["name"]):
             with stats_lock:
                 stats["skip"] += 1
         else:
@@ -322,12 +374,12 @@ def download_pdfs_for_company(hw_brand: str, company_name: str) -> None:
     for m in company.get("models") or []:
         model = m.get("model_name") or "model"
         if hw_brand == "IPHONE" and str(model).lower().startswith("iphone"):
-            # already stored under iphone_originals/PDF
-            continue
+            # already stored under library/IPHONE/PDF via the iPhone dump
+            pass
         for p in m.get("pdfs") or []:
             jobs.append(
                 {
-                    "brand": "APPLE" if hw_brand == "IPHONE" else hw_brand,
+                    "brand": hw_brand,
                     "model": model,
                     "name": p.get("title") or "schematic",
                     "url": p.get("url"),
@@ -451,22 +503,26 @@ def main() -> int:
     for brand in brands:
         log(f"==== BRAND {brand} hardware ====")
         try:
-            jobs = walk_brand(brand)
+            jobs = process_brand_incremental(brand)
         except Exception as e:
-            log(f"CATALOG FAIL {brand}: {e}")
+            log(f"CATALOG/DOWNLOAD FAIL {brand}: {e}")
             write_status()
             continue
-        if brand == "IPHONE":
-            before = len(jobs)
-            jobs = [j for j in jobs if not skip_iphone_phone(j["model"])]
-            log(f"IPHONE leftover after skipping phones: {len(jobs)}/{before}")
         cat = LIB / "catalogs" / f"{safe(brand)}.json"
         cat.write_text(
             json.dumps({"brand": brand, "count": len(jobs), "jobs": jobs}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         log(f"{brand} catalog saved {len(jobs)} files -> {cat}")
-        download_jobs(jobs, brand)
+        # retry any hardware still missing
+        missing = [
+            j
+            for j in jobs
+            if not existing_file(hw_dir(j["brand"], j.get("path") or [j["model"]], j["model"]), j["name"])
+        ]
+        if missing:
+            log(f"{brand} retry missing hardware {len(missing)}")
+            download_jobs(missing, brand)
         company = PDF_COMPANY.get(brand)
         if company:
             log(f"==== BRAND {brand} PDFs ({company}) ====")

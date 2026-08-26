@@ -1,27 +1,26 @@
-CircuitBit — كل الشركات
-======================
+CircuitBit — مجلد لكل شركة
+==========================
 
-التحميل يجري الآن شركة تلو الأخرى، أصول فقط (بدون صور وهمية 900×400).
+كل شركة في مجلدها. لا خلط.
 
-الترتيب:
-  1. SAMSUNG
-  2. INFINIX
-  3. VIVO
-  4. باقي الشركات كلها (Huawei, Oppo, Xiaomi, Realme, Tecno, ...)
-  5. بقايا آبل (iPad) — هواتف الآيفون مكتملة مسبقاً
+library/
+  IPHONE/     Hardware/  PDF/
+  SAMSUNG/    Hardware/  PDF/
+  INFINIX/    Hardware/  PDF/
+  VIVO/       Hardware/
+  HUAWEI/     Hardware/  PDF/
+  OPPO/       Hardware/  PDF/
+  XIAOMI/     Hardware/  PDF/
+  REALME/     Hardware/
+  TECNO/      Hardware/
+  ... باقي الشركات بنفس الشكل
 
-المجلد:
-  artifacts/app2/library/{الشركة}/Hardware/{الموديل}/
-  artifacts/app2/library/{الشركة}/PDF/{الموديل}/
+داخل الشركة:
+  Hardware/{سلسلة}/{موديل}/صور اللوحة PNG
+  PDF/{موديل}/مخططات PDF
 
-الآيفون السابق:
-  artifacts/app2/iphone_originals
-  ورابط داخل library/IPHONE
+أقسام CircuitBit التي تُنزَّل لكل شركة إن وُجدت:
+  - Hardware: كل الموديلات وكل الصور (بدون صور وهمية)
+  - PDF/Diagram: كل المخططات (موجودة فقط لـ Apple/Samsung/Infinix/Huawei/Oppo/Xiaomi)
 
-ملاحظات الكتالوج:
-  - صور الهاردوير موجودة لكل الشركات (1377 موديل / 22 شركة)
-  - مخططات PDF موجودة فقط لـ: Apple, Samsung, Infinix, Huawei, Oppo, Xiaomi
-  - Vivo و Tecno و Realme وغيرها: هاردوير فقط (لا PDF في CircuitBit)
-
-الحالة الحية: artifacts/app2/library/STATUS.txt
-السجل: artifacts/app2/library/download.log
+الآيفون مكتمل مسبقاً ويبقى في IPHONE فقط.
