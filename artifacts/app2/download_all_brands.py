@@ -33,7 +33,7 @@ DIAGRAM = "https://circuitbitapp.com/api_data/api_link/diagram.php"
 PLACEHOLDER_WH = (900, 400)
 MIN_REAL = 20_000
 WORKERS = 3
-RETRIES = 6
+RETRIES = 2
 
 PRIORITY = ["SAMSUNG", "INFINIX", "VIVO"]
 PDF_COMPANY = {
@@ -535,9 +535,9 @@ def main() -> int:
                 jobs = process_brand_incremental(brand)
                 break
             except Exception as e:
-                log(f"CATALOG FAIL {brand}: {e} — retry in 60s, will not skip this company")
+                log(f"CATALOG FAIL {brand}: {e} — retry in 180s, will not skip this company")
                 write_status()
-                time.sleep(60)
+                time.sleep(180)
         cat = LIB / "catalogs" / f"{safe(brand)}.json"
         cat.write_text(
             json.dumps({"brand": brand, "count": len(jobs), "jobs": jobs}, ensure_ascii=False, indent=2),
