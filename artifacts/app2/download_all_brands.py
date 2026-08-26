@@ -119,7 +119,7 @@ def is_original(data: bytes) -> bool:
 
 
 def http_get(url: str, timeout: int = 180) -> bytes:
-    """Prefer curl (Python SSL to this host often hangs); fall back to urllib."""
+    """curl only — Python SSL to this host often hangs for 25s+."""
     last: Exception | None = None
     for attempt in range(RETRIES):
         hdr = headers()
@@ -129,9 +129,9 @@ def http_get(url: str, timeout: int = 180) -> bytes:
             "--http1.1",
             "-L",
             "--connect-timeout",
-            "12",
+            "8",
             "--max-time",
-            str(max(20, timeout)),
+            str(max(15, timeout)),
             "-A",
             hdr["User-Agent"],
             "-o",
@@ -143,22 +143,16 @@ def http_get(url: str, timeout: int = 180) -> bytes:
             cmd.extend(["-H", f"{k}: {v}"])
         cmd.append(url)
         try:
-            p = subprocess.run(cmd, capture_output=True, timeout=timeout + 8)
+            p = subprocess.run(cmd, capture_output=True, timeout=timeout + 5)
             if p.returncode == 0 and p.stdout:
                 return p.stdout
             err = (p.stderr or b"").decode("utf-8", "replace")[:180]
-            last = RuntimeError(f"curl {p.returncode} {err}")
+            last = RuntimeError(f"curl {p.returncode} {err or 'empty body'}")
         except Exception as e:
             last = e
-        try:
-            req = urllib.request.Request(url, headers=hdr)
-            with urllib.request.urlopen(req, timeout=min(timeout, 25)) as r:
-                return r.read()
-        except Exception as e:
-            last = e
-            if attempt == 0 or attempt == RETRIES - 1:
-                log(f"HTTP retry {attempt+1}/{RETRIES} {type(e).__name__}: {e} {url[:90]}")
-            time.sleep(0.25 * (attempt + 1))
+        if attempt == 0 or attempt == RETRIES - 1:
+            log(f"HTTP retry {attempt+1}/{RETRIES}: {last} {url[:90]}")
+        time.sleep(0.2 * (attempt + 1))
     raise RuntimeError(str(last))
 
 
