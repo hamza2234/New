@@ -39,6 +39,8 @@ RETRIES = 2
 # extra retries on SSL timeout keep the ban alive.
 CATALOG_RETRY_S = 14400
 TLS_PROBE_URL = "https://circuitbitapp.com/"
+# Optional egress: socks5h://127.0.0.1:25344 (Cloudflare WARP via wireproxy)
+CURL_PROXY = (os.environ.get("CB_CURL_PROXY") or "").strip()
 
 PRIORITY = ["SAMSUNG", "INFINIX", "VIVO"]
 PDF_COMPANY = {
@@ -123,6 +125,12 @@ def is_original(data: bytes) -> bool:
     return len(data) >= MIN_REAL or data.startswith(b"%PDF")
 
 
+def curl_proxy_args() -> list[str]:
+    if not CURL_PROXY:
+        return []
+    return ["--proxy", CURL_PROXY]
+
+
 def _is_tls_block(err: str) -> bool:
     e = err.lower()
     return any(
@@ -149,6 +157,9 @@ def tls_up() -> bool:
         "--max-time",
         "12",
         "-k",
+        "-A",
+        UA,
+        *curl_proxy_args(),
         TLS_PROBE_URL,
     ]
     try:
@@ -195,6 +206,7 @@ def http_get(url: str, timeout: int = 180) -> bytes:
             str(max(15, timeout)),
             "-A",
             hdr["User-Agent"],
+            *curl_proxy_args(),
             "-o",
             "-",
         ]
@@ -590,7 +602,10 @@ def main() -> int:
     link_iphone()
     only = [a.upper() for a in sys.argv[1:] if not a.startswith("-")]
     brands = only or brand_order()
-    log(f"START brands={brands} workers={WORKERS} catalog_retry={CATALOG_RETRY_S}s")
+    log(
+        f"START brands={brands} workers={WORKERS} catalog_retry={CATALOG_RETRY_S}s "
+        f"proxy={'on' if CURL_PROXY else 'off'}"
+    )
     write_status()
     initial = int(os.environ.get("CB_INITIAL_SLEEP", "0") or "0")
     if initial > 0:
