@@ -47,6 +47,11 @@ CURL_PROXY = (os.environ.get("CB_CURL_PROXY") or "").strip()
 PROXY_POOL = [p.strip() for p in CURL_PROXY.split(",") if p.strip()]
 
 PRIORITY = ["SAMSUNG", "INFINIX", "VIVO"]
+# Catalog folder names that differ from hardware_solution.php ?brand=
+API_BRAND = {
+    "GOOGLE PIXEL": "GOOGLE",
+    "NOTING PHONE": "NOTING",
+}
 PDF_COMPANY = {
     "SAMSUNG": "Samsung",
     "INFINIX": "Infinix",
@@ -407,7 +412,7 @@ def pdf_dir(brand: str, model: str) -> Path:
 
 def list_items(brand: str | None = None, node: str | None = None) -> list[dict]:
     if brand:
-        url = HW + "?action=list&brand=" + urllib.parse.quote(brand)
+        url = HW + "?action=list&brand=" + urllib.parse.quote(API_BRAND.get(brand, brand))
     else:
         url = HW + "?action=list&node=" + urllib.parse.quote(node or "")
     # Fast fail-over to the other SOCKS hop; 90s LIST hangs look "stuck".
