@@ -535,9 +535,9 @@ def main() -> int:
                 jobs = process_brand_incremental(brand)
                 break
             except Exception as e:
-                log(f"CATALOG FAIL {brand}: {e} — retry in 20s, will not skip this company")
+                log(f"CATALOG FAIL {brand}: {e} — retry in 60s, will not skip this company")
                 write_status()
-                time.sleep(20)
+                time.sleep(60)
         cat = LIB / "catalogs" / f"{safe(brand)}.json"
         cat.write_text(
             json.dumps({"brand": brand, "count": len(jobs), "jobs": jobs}, ensure_ascii=False, indent=2),
