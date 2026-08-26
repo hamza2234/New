@@ -7,6 +7,7 @@ Never keeps 900x400 placeholder images. Resume-safe.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import random
@@ -33,8 +34,9 @@ HW = "https://circuitbitapp.com/api_data/api_link/hardware_solution.php"
 DIAGRAM = "https://circuitbitapp.com/api_data/api_link/diagram.php"
 PLACEHOLDER_WH = (900, 400)
 MIN_REAL = 20_000
-WORKERS = 6
+WORKERS = int(os.environ.get("CB_WORKERS", "16") or "16")
 RETRIES = 3
+LIST_BATCH = int(os.environ.get("CB_LIST_BATCH", "8") or "8")
 # Direct IP is banned; with SOCKS retry catalog quickly instead of parking 4h.
 CATALOG_RETRY_S = 14400
 TLS_PROBE_URL = "https://circuitbitapp.com/"
@@ -125,10 +127,16 @@ def is_original(data: bytes) -> bool:
     return len(data) >= MIN_REAL or data.startswith(b"%PDF")
 
 
+_proxy_seq = itertools.count()
+_proxy_lock = threading.Lock()
+
+
 def curl_proxy_args() -> list[str]:
     if not PROXY_POOL:
         return []
-    return ["--proxy", random.choice(PROXY_POOL)]
+    with _proxy_lock:
+        i = next(_proxy_seq) % len(PROXY_POOL)
+    return ["--proxy", PROXY_POOL[i]]
 
 
 def _is_tls_block(err: str) -> bool:
@@ -193,7 +201,7 @@ def wait_until_tls(brand: str) -> None:
             return
 
 
-def http_get(url: str, timeout: int = 180) -> bytes:
+def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
     """curl only — Python SSL to this host often hangs for 25s+."""
     last: Exception | None = None
     for attempt in range(RETRIES):
@@ -204,7 +212,7 @@ def http_get(url: str, timeout: int = 180) -> bytes:
             "--http1.1",
             "-L",
             "--connect-timeout",
-            "20" if CURL_PROXY else "8",
+            "12" if CURL_PROXY else "8",
             "--max-time",
             str(max(15, timeout)),
             "-A",
@@ -213,6 +221,9 @@ def http_get(url: str, timeout: int = 180) -> bytes:
             "-o",
             "-",
         ]
+        if abort_stall:
+            # Drop a dead WARP hop instead of sitting for minutes.
+            cmd.extend(["--speed-limit", "50000", "--speed-time", "12"])
         for k, v in hdr.items():
             if k == "User-Agent":
                 continue
@@ -297,6 +308,20 @@ def list_items(brand: str | None = None, node: str | None = None) -> list[dict]:
     if isinstance(data, dict) and data.get("error"):
         raise RuntimeError(str(data["error"]))
     return list(data.get("items") or [])
+
+
+def list_items_retry(
+    brand: str | None = None, node: str | None = None, label: str = ""
+) -> list[dict]:
+    last_err: Exception | None = None
+    for attempt in range(5):
+        try:
+            return list_items(brand=brand, node=node)
+        except Exception as e:
+            last_err = e
+            log(f"LIST retry {attempt+1}/5 {label}: {e}")
+            time.sleep(1.2 * (attempt + 1))
+    raise last_err or RuntimeError(f"LIST failed {label}")
 
 
 def walk_brand(brand: str) -> list[dict]:
@@ -392,19 +417,11 @@ def process_brand_incremental(brand: str) -> list[dict]:
                 log(f"SKIP LIST {brand} {label}: {len(have)} files already on disk")
                 return
         log(f"LIST {brand} {label}")
-        items: list[dict] | None = None
-        last_err: Exception | None = None
-        for attempt in range(5):
-            try:
-                items = list_items(brand=brand) if node is None else list_items(node=node)
-                last_err = None
-                break
-            except Exception as e:
-                last_err = e
-                log(f"LIST retry {attempt+1}/5 {brand} {label}: {e}")
-                time.sleep(1.2 * (attempt + 1))
-        if items is None:
-            raise last_err or RuntimeError(f"LIST failed {brand} {label}")
+        items = list_items_retry(
+            brand=brand if node is None else None,
+            node=node,
+            label=f"{brand} {label}",
+        )
         files = [i for i in items if i.get("type") == "file" and i.get("node")]
         folders = [i for i in items if i.get("type") == "folder" and i.get("node")]
         log(f"LIST {brand} {label}: folders={len(folders)} files={len(files)}")
@@ -425,8 +442,64 @@ def process_brand_incremental(brand: str) -> list[dict]:
                 ]
                 all_jobs.extend(jobs)
                 download_jobs(jobs, brand)
+
+        todo: list[tuple[str, list[str]]] = []
         for fol in folders:
-            rec(fol["node"], path + [fol.get("name") or "folder"])
+            cpath = path + [fol.get("name") or "folder"]
+            have = disk_originals(hw_dir(brand, cpath, cpath[-1]))
+            if have and cpath[-1] not in relist:
+                log(
+                    f"SKIP LIST {brand} {' / '.join(cpath)}: {len(have)} files already on disk"
+                )
+                continue
+            todo.append((fol["node"], cpath))
+
+        for i in range(0, len(todo), LIST_BATCH):
+            chunk = todo[i : i + LIST_BATCH]
+            batch_jobs: list[dict] = []
+            deeper: list[tuple[str, list[str]]] = []
+
+            def _list_child(item: tuple[str, list[str]]):
+                node_i, cpath = item
+                lab = " / ".join(cpath)
+                log(f"LIST {brand} {lab}")
+                items_i = list_items_retry(node=node_i, label=f"{brand} {lab}")
+                files_i = [x for x in items_i if x.get("type") == "file" and x.get("node")]
+                folders_i = [
+                    x for x in items_i if x.get("type") == "folder" and x.get("node")
+                ]
+                log(
+                    f"LIST {brand} {lab}: folders={len(folders_i)} files={len(files_i)}"
+                )
+                jobs_i: list[dict] = []
+                model = cpath[-1] if cpath else brand
+                if files_i and not (brand == "IPHONE" and skip_iphone_phone(model)):
+                    jobs_i = [
+                        {
+                            "brand": brand,
+                            "model": model,
+                            "path": cpath,
+                            "name": f.get("name") or "file",
+                            "node": f["node"],
+                        }
+                        for f in files_i
+                    ]
+                kids = [
+                    (f["node"], cpath + [f.get("name") or "folder"]) for f in folders_i
+                ]
+                return jobs_i, kids
+
+            with ThreadPoolExecutor(max_workers=min(LIST_BATCH, len(chunk))) as ex:
+                futs = [ex.submit(_list_child, it) for it in chunk]
+                for fut in as_completed(futs):
+                    jobs_i, kids = fut.result()
+                    batch_jobs.extend(jobs_i)
+                    deeper.extend(kids)
+            if batch_jobs:
+                all_jobs.extend(batch_jobs)
+                download_jobs(batch_jobs, brand)
+            for node_d, path_d in deeper:
+                rec(node_d, path_d)
 
     rec(None, [])
     return all_jobs
@@ -461,7 +534,8 @@ def download_hw_one(job: dict, idx: int, total: int) -> None:
                 continue
             body = http_get(
                 HW + "?action=serve&node=" + urllib.parse.quote(serve),
-                timeout=420 if CURL_PROXY else 180,
+                timeout=90 if CURL_PROXY else 180,
+                abort_stall=bool(CURL_PROXY),
             )
             if png_size(body) == PLACEHOLDER_WH:
                 last = "placeholder"
@@ -500,40 +574,22 @@ def download_jobs(jobs: list[dict], brand: str) -> None:
                 stats["skip"] += 1
         else:
             pending.append(j)
-    log(f"{brand} hardware catalog={len(jobs)} pending={len(pending)} skip={len(jobs)-len(pending)}")
+    log(
+        f"{brand} hardware catalog={len(jobs)} pending={len(pending)} "
+        f"skip={len(jobs)-len(pending)} workers={WORKERS} proxies={len(PROXY_POOL)}"
+    )
     write_status()
     if not pending:
         return
-    # one model at a time so logs stay readable and URLs stay fresh
-    by_model: dict[str, list[dict]] = defaultdict(list)
-    order: list[str] = []
-    for j in pending:
-        if j["model"] not in by_model:
-            order.append(j["model"])
-        by_model[j["model"]].append(j)
-    done_models = 0
-    for model in order:
-        group = by_model[model]
-        log(f"MODEL {brand} / {model}: downloading {len(group)} files")
-        with ThreadPoolExecutor(max_workers=min(WORKERS, len(group))) as ex:
-            futs = [
-                ex.submit(download_hw_one, j, i, len(group))
-                for i, j in enumerate(group, 1)
-            ]
-            for fut in as_completed(futs):
-                fut.result()
-        done_models += 1
-        folder = hw_dir(brand, group[0].get("path") or [model], model)
-        have = sum(
-            1
-            for p in folder.glob("*")
-            if p.is_file() and not p.name.endswith(".part")
-        )
-        log(
-            f"AFTER {brand} / {model}: files={have} "
-            f"models {done_models}/{len(order)} new={stats['ok']} fail={stats['fail']}"
-        )
-        write_status()
+    models = {j["model"] for j in pending}
+    log(f"{brand} downloading {len(pending)} files across {len(models)} models")
+    with ThreadPoolExecutor(max_workers=min(WORKERS, len(pending))) as ex:
+        futs = [
+            ex.submit(download_hw_one, j, i, len(pending)) for i, j in enumerate(pending, 1)
+        ]
+        for fut in as_completed(futs):
+            fut.result()
+    write_status()
 
 
 def fetch_diagram() -> dict:
@@ -614,7 +670,7 @@ def download_pdfs_for_company(hw_brand: str, company_name: str) -> None:
             stats["fail"] += 1
         log(f"[{idx}/{total}] PDF FAIL {j['brand']} / {j['model']} / {j['name']} ({last})")
 
-    with ThreadPoolExecutor(max_workers=min(4, len(pending))) as ex:
+    with ThreadPoolExecutor(max_workers=min(WORKERS, len(pending))) as ex:
         futs = [ex.submit(one, j, i, len(pending)) for i, j in enumerate(pending, 1)]
         for fut in as_completed(futs):
             fut.result()
