@@ -442,7 +442,8 @@ def existing_file(folder: Path, name: str) -> Path | None:
     for p in folder.iterdir():
         if not p.is_file() or p.name.endswith(".part"):
             continue
-        if p.stem != base:
+        # Accept "LCD.png" or "LCD (مخطط عطل الشاشة).png"
+        if p.stem != base and not p.stem.startswith(base + " ("):
             continue
         if p.stat().st_size < MIN_REAL and p.suffix.lower() != ".pdf":
             continue
