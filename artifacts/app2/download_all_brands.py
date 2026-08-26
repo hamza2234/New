@@ -10,6 +10,7 @@ import hashlib
 import json
 import random
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -31,8 +32,8 @@ HW = "https://circuitbitapp.com/api_data/api_link/hardware_solution.php"
 DIAGRAM = "https://circuitbitapp.com/api_data/api_link/diagram.php"
 PLACEHOLDER_WH = (900, 400)
 MIN_REAL = 20_000
-WORKERS = 6
-RETRIES = 6
+WORKERS = 8
+RETRIES = 8
 
 PRIORITY = ["SAMSUNG", "INFINIX", "VIVO"]
 PDF_COMPANY = {
@@ -118,17 +119,46 @@ def is_original(data: bytes) -> bool:
 
 
 def http_get(url: str, timeout: int = 180) -> bytes:
+    """Prefer curl (Python SSL to this host often hangs); fall back to urllib."""
     last: Exception | None = None
     for attempt in range(RETRIES):
+        hdr = headers()
+        cmd = [
+            "curl",
+            "-sS",
+            "--http1.1",
+            "-L",
+            "--connect-timeout",
+            "12",
+            "--max-time",
+            str(max(20, timeout)),
+            "-A",
+            hdr["User-Agent"],
+            "-o",
+            "-",
+        ]
+        for k, v in hdr.items():
+            if k == "User-Agent":
+                continue
+            cmd.extend(["-H", f"{k}: {v}"])
+        cmd.append(url)
         try:
-            req = urllib.request.Request(url, headers=headers())
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            p = subprocess.run(cmd, capture_output=True, timeout=timeout + 8)
+            if p.returncode == 0 and p.stdout:
+                return p.stdout
+            err = (p.stderr or b"").decode("utf-8", "replace")[:180]
+            last = RuntimeError(f"curl {p.returncode} {err}")
+        except Exception as e:
+            last = e
+        try:
+            req = urllib.request.Request(url, headers=hdr)
+            with urllib.request.urlopen(req, timeout=min(timeout, 25)) as r:
                 return r.read()
         except Exception as e:
             last = e
             if attempt == 0 or attempt == RETRIES - 1:
                 log(f"HTTP retry {attempt+1}/{RETRIES} {type(e).__name__}: {e} {url[:90]}")
-            time.sleep(0.35 * (attempt + 1))
+            time.sleep(0.25 * (attempt + 1))
     raise RuntimeError(str(last))
 
 
