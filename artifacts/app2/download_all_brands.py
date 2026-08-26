@@ -32,8 +32,8 @@ HW = "https://circuitbitapp.com/api_data/api_link/hardware_solution.php"
 DIAGRAM = "https://circuitbitapp.com/api_data/api_link/diagram.php"
 PLACEHOLDER_WH = (900, 400)
 MIN_REAL = 20_000
-WORKERS = 8
-RETRIES = 8
+WORKERS = 3
+RETRIES = 4
 
 PRIORITY = ["SAMSUNG", "INFINIX", "VIVO"]
 PDF_COMPANY = {
@@ -152,7 +152,7 @@ def http_get(url: str, timeout: int = 180) -> bytes:
             last = e
         if attempt == 0 or attempt == RETRIES - 1:
             log(f"HTTP retry {attempt+1}/{RETRIES}: {last} {url[:90]}")
-        time.sleep(0.2 * (attempt + 1))
+        time.sleep(0.4 * (attempt + 1) + random.random() * 0.3)
     raise RuntimeError(str(last))
 
 
