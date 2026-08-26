@@ -42,9 +42,20 @@ PER_PROXY = int(os.environ.get("CB_PER_PROXY", "3") or "3")
 # Direct IP is banned; with SOCKS retry catalog quickly instead of parking 4h.
 CATALOG_RETRY_S = 14400
 TLS_PROBE_URL = "https://circuitbitapp.com/"
-# Optional egress: socks5h://127.0.0.1:25344 or comma-separated pool
+# Optional egress: socks5h://127.0.0.1:25344 or comma-separated pool.
+# Live hops are hot-reloaded from CB_PROXY_FILE (farm_warp_hops.py writes it).
 CURL_PROXY = (os.environ.get("CB_CURL_PROXY") or "").strip()
 PROXY_POOL = [p.strip() for p in CURL_PROXY.split(",") if p.strip()]
+PROXY_FILE = Path(os.environ.get("CB_PROXY_FILE") or "/tmp/egress/live_proxies.txt")
+# Skip brands already on disk so a fresh WARP hop is not burned on Samsung LIST.
+SKIP_BRANDS = {
+    b.strip().upper()
+    for b in (
+        os.environ.get("CB_SKIP_BRANDS")
+        or "SAMSUNG,INFINIX,VIVO,ASUS,GOOGLE PIXEL"
+    ).split(",")
+    if b.strip()
+}
 
 PRIORITY = ["SAMSUNG", "INFINIX", "VIVO"]
 # Catalog folder names that differ from hardware_solution.php ?brand=
@@ -137,6 +148,7 @@ def is_original(data: bytes) -> bool:
 _proxy_seq = itertools.count()
 _proxy_lock = threading.Lock()
 _session_q: queue.Queue | None = None
+_proxy_mtime: float = -1.0
 _HAS_REQUESTS = False
 try:
     import requests
@@ -160,28 +172,74 @@ def _new_session(proxy: str | None) -> object:
     return s
 
 
+def _hop_dead_err(err: str) -> bool:
+    e = err.lower()
+    return any(
+        s in e
+        for s in (
+            "ssl connection timeout",
+            "ssl connect error",
+            "connection refused",
+            "can't complete socks5",
+            "timed out",
+            "read timed out",
+            "max retries exceeded",
+        )
+    )
+
+
+def current_proxies() -> list[str]:
+    """Hot-reload SOCKS hops written by farm_warp_hops.py."""
+    global PROXY_POOL, _session_q, _proxy_mtime
+    try:
+        st = PROXY_FILE.stat()
+        if st.st_mtime != _proxy_mtime:
+            lines = [
+                ln.strip()
+                for ln in PROXY_FILE.read_text().splitlines()
+                if ln.strip() and not ln.startswith("#")
+            ]
+            with _proxy_lock:
+                if st.st_mtime != _proxy_mtime:
+                    PROXY_POOL = lines
+                    _proxy_mtime = st.st_mtime
+                    _session_q = None
+                    stats["tls"] = f"proxy file n={len(lines)}"
+    except FileNotFoundError:
+        pass
+    return PROXY_POOL
+
+
+def _rebuild_sessions() -> queue.Queue:
+    global _session_q
+    q: queue.Queue = queue.Queue()
+    n = max(1, PER_PROXY)
+    proxies = list(PROXY_POOL)
+    if proxies:
+        for p in proxies:
+            for _ in range(n):
+                q.put(_new_session(p))
+    else:
+        q.put(_new_session(None))
+    _session_q = q
+    return q
+
+
 def _session_pool() -> queue.Queue:
+    current_proxies()
     global _session_q
     if _session_q is not None:
         return _session_q
     with _proxy_lock:
         if _session_q is not None:
             return _session_q
-        q: queue.Queue = queue.Queue()
-        n = max(1, PER_PROXY)
-        if PROXY_POOL:
-            for p in PROXY_POOL:
-                for _ in range(n):
-                    q.put(_new_session(p))
-        else:
-            q.put(_new_session(None))
-        _session_q = q
-        return q
+        return _rebuild_sessions()
 
 
 def curl_proxy_args(proxy: str | None = None) -> list[str]:
     if proxy:
         return ["--proxy", proxy]
+    current_proxies()
     if not PROXY_POOL:
         return []
     with _proxy_lock:
@@ -233,9 +291,21 @@ def tls_up() -> bool:
 
 def wait_until_tls(brand: str) -> None:
     """Do not hammer the catalog while this VM's IP is TLS-blocked."""
+    current_proxies()
     if PROXY_POOL:
         stats["tls"] = f"proxy pool={len(PROXY_POOL)}"
         return
+    # Farm still spinning up — wait for the first HTTP-200 hop, do not use VM IP.
+    t0 = time.time()
+    while time.time() - t0 < 180:
+        current_proxies()
+        if PROXY_POOL:
+            stats["tls"] = f"proxy pool={len(PROXY_POOL)}"
+            log(f"WARP hop ready n={len(PROXY_POOL)} — resume {brand}")
+            return
+        log(f"waiting for live WARP hop before {brand} ({int(time.time()-t0)}s)")
+        write_status()
+        time.sleep(3)
     if tls_up():
         return
     while True:
@@ -276,16 +346,18 @@ def _read_stall(resp, min_bps: int = 50000, window: float = 10.0) -> bytes:
 
 def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
     """Keep-alive HTTPS via WARP SOCKS. New TLS per curl was the bottleneck."""
+    current_proxies()
     if not _HAS_REQUESTS or not PROXY_POOL:
         return _http_get_curl(url, timeout=timeout, abort_stall=abort_stall)
     last: Exception | None = None
-    q = _session_pool()
     for attempt in range(RETRIES):
+        current_proxies()
+        q = _session_pool()
         s = q.get()
         try:
             hdr = headers()
-            connect = 25 if PROXY_POOL else 8
-            read = max(25, timeout)
+            connect = 12 if PROXY_POOL else 8
+            read = max(20, min(timeout, 40))
             r = s.get(
                 url,
                 headers=hdr,
@@ -298,6 +370,7 @@ def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
             if not body:
                 # CircuitBit often 200s an empty serve node; more TLS retries won't fill it.
                 raise RuntimeError("empty body")
+            q.put(s)
             return body
         except Exception as e:
             last = e
@@ -306,11 +379,14 @@ def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
                 s.close()
             except Exception:
                 pass
-            s = _new_session(proxy)
             if "empty body" in str(e).lower():
+                q.put(_new_session(proxy))
                 raise RuntimeError("empty body") from e
-        finally:
-            q.put(s)
+            # Dead hop: pick a *different* live proxy on the next try.
+            alt = [p for p in current_proxies() if p != proxy]
+            q.put(_new_session(alt[attempt % len(alt)] if alt else proxy))
+            if _hop_dead_err(str(e)):
+                log(f"HOP dead {proxy} — rotate ({e.__class__.__name__})")
         if attempt == RETRIES - 1:
             log(f"HTTP retry {attempt+1}/{RETRIES}: {last} {url[:90]}")
         time.sleep(0.1 * (attempt + 1))
@@ -416,7 +492,7 @@ def list_items(brand: str | None = None, node: str | None = None) -> list[dict]:
     else:
         url = HW + "?action=list&node=" + urllib.parse.quote(node or "")
     # Fast fail-over to the other SOCKS hop; 90s LIST hangs look "stuck".
-    data = json.loads(http_get(url, timeout=40 if PROXY_POOL else 25))
+    data = json.loads(http_get(url, timeout=20 if PROXY_POOL else 25))
     if isinstance(data, dict) and data.get("error"):
         raise RuntimeError(str(data["error"]))
     return list(data.get("items") or [])
@@ -710,14 +786,16 @@ def download_jobs(jobs: list[dict], brand: str) -> None:
             pending.append(j)
     log(
         f"{brand} hardware catalog={len(jobs)} pending={len(pending)} "
-        f"skip={len(jobs)-len(pending)} workers={WORKERS} proxies={len(PROXY_POOL)}"
+        f"skip={len(jobs)-len(pending)} workers={WORKERS} proxies={len(current_proxies())}"
     )
     write_status()
     if not pending:
         return
     models = {j["model"] for j in pending}
-    log(f"{brand} downloading {len(pending)} files across {len(models)} models")
-    with ThreadPoolExecutor(max_workers=min(WORKERS, len(pending))) as ex:
+    nproxy = max(1, len(current_proxies()))
+    workers = min(WORKERS, max(PER_PROXY, PER_PROXY * nproxy), len(pending))
+    log(f"{brand} downloading {len(pending)} files across {len(models)} models workers={workers}")
+    with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [
             ex.submit(download_hw_one, j, i, len(pending)) for i, j in enumerate(pending, 1)
         ]
@@ -869,10 +947,16 @@ def main() -> int:
     link_iphone()
     only = [a.upper() for a in sys.argv[1:] if not a.startswith("-")]
     brands = only or brand_order()
+    if not only and SKIP_BRANDS:
+        skipped = [b for b in brands if b in SKIP_BRANDS]
+        brands = [b for b in brands if b not in SKIP_BRANDS]
+        if skipped:
+            log(f"SKIP already-complete brands {skipped} — start {brands[:3]}")
     log(
         f"START brands={brands} workers={WORKERS} catalog_retry={CATALOG_RETRY_S}s "
-        f"keepalive={_HAS_REQUESTS and bool(PROXY_POOL)} per_proxy={PER_PROXY} "
-        f"proxy={'on:'+','.join(PROXY_POOL) if PROXY_POOL else 'off'}"
+        f"keepalive={_HAS_REQUESTS and bool(current_proxies())} per_proxy={PER_PROXY} "
+        f"proxy_file={PROXY_FILE} "
+        f"proxy={'on:'+','.join(current_proxies()) if current_proxies() else 'waiting'}"
     )
     write_status()
     initial = int(os.environ.get("CB_INITIAL_SLEEP", "0") or "0")
