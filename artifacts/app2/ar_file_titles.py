@@ -14,6 +14,37 @@ IPHONE = Path("/workspace/artifacts/app2/iphone_originals")
 
 # Exact English stem -> Arabic in parentheses (no extra parens).
 HW_AR: dict[str, str] = {
+    "BEFORE AFTER VOLTAGE": "جهد قبل وبعد",
+    "CPU VOLTAGE": "جهد المعالج",
+    "SD CARD": "مخطط عطل كرت الذاكرة",
+    "SUB BOARD": "مخطط عطل البورد الفرعي",
+    "SUB BOARD A": "مخطط عطل البورد الفرعي أ",
+    "SUB BOARD B": "مخطط عطل البورد الفرعي ب",
+    "SUB BOARD 1": "مخطط عطل البورد الفرعي 1",
+    "SUB BOARD 2": "مخطط عطل البورد الفرعي 2",
+    "SUB BOARD THERMISTOR": "مخطط عطل ثرمستور البورد الفرعي",
+    "UFS EMMC VOLT & PINOUT": "جهد وبنوت الذاكرة",
+    "HOME KEY": "مخطط عطل زر الهوم",
+    "TOUCH HOME KEY": "مخطط عطل لمس زر الهوم",
+    "FRONT CAMERA": "مخطط عطل الكاميرا الأمامية",
+    "BACK CAMERA": "مخطط عطل الكاميرا الخلفية",
+    "CHARGER & DATA 1": "مخطط عطل الشحن والبيانات 1",
+    "CHARGER & DATA 2": "مخطط عطل الشحن والبيانات 2",
+    "CHARGER & DATA 3": "مخطط عطل الشحن والبيانات 3",
+    "CHARGER & DATA C": "مخطط عطل الشحن والبيانات ج",
+    "COMPONENT NAME MAIN": "أسماء القطع الرئيسية",
+    "SIM CARD 1": "مخطط عطل الشريحة 1",
+    "SIM CARD 2": "مخطط عطل الشريحة 2",
+    "SIM CARD A": "مخطط عطل الشريحة أ",
+    "SIM CARD B": "مخطط عطل الشريحة ب",
+    "LCD SUB": "مخطط عطل الشاشة الفرعية",
+    "LCD LIGHT SUB": "مخطط عطل إضاءة الشاشة الفرعية",
+    "TOUCHSCREEN SUB": "مخطط عطل اللمس الفرعي",
+    "TOUCHSCREEN MAIN": "مخطط عطل اللمس الرئيسي",
+    "DIODA MODE (DT17DN) CONNECTOR": "وضع الدايود الكونكتر",
+    "DIODA MODE (DT17DN) CPU": "وضع الدايود المعالج",
+    "DIODA MODE (DT17DN) INPUT-OUTPUT": "وضع الدايود جهد الدخل والخرج",
+    "DIODA MODE (SANWA-CD800A) CPU": "وضع الدايود المعالج",
     "BASEBAND": "مخطط عطل البيسباند",
     "BASEBAND A": "مخطط عطل البيسباند أ",
     "BASEBAND B": "مخطط عطل البيسباند ب",
@@ -80,12 +111,33 @@ def already_bilingual(stem: str) -> bool:
     return bool(_HAS_AR.search(stem)) and stem.endswith(")")
 
 
+def _hw_ar_guess(stem: str) -> str | None:
+    u = stem.upper().strip()
+    if u in HW_AR:
+        return HW_AR[u]
+    if u.startswith("BACK CAMERA"):
+        return "مخطط عطل الكاميرا الخلفية"
+    if u.startswith("FRONT CAMERA"):
+        return "مخطط عطل الكاميرا الأمامية"
+    if "DIODA MODE" in u and "CONNECTOR" in u:
+        return "وضع الدايود الكونكتر"
+    if "DIODA MODE" in u and "CPU" in u:
+        return "وضع الدايود المعالج"
+    if "DIODA MODE" in u and "INPUT" in u:
+        return "وضع الدايود جهد الدخل والخرج"
+    if u.startswith("CHARGER"):
+        return "مخطط عطل الشحن والبيانات"
+    if u.startswith("COMPONENT NAME"):
+        return "أسماء القطع"
+    if u.startswith("MIC SPEAKER"):
+        return "مخطط عطل المايك والسبيكر والزرار"
+    return "مخطط عطل"
+
+
 def hw_bilingual_stem(stem: str) -> str:
     if already_bilingual(stem):
         return stem
-    ar = HW_AR.get(stem)
-    if not ar:
-        ar = HW_AR.get(stem.upper())
+    ar = HW_AR.get(stem) or HW_AR.get(stem.upper()) or _hw_ar_guess(stem)
     if not ar:
         return stem
     return f"{stem} ({ar})"
@@ -145,18 +197,23 @@ def rename_tree(root: Path, kind: str) -> tuple[int, int, list[str]]:
 
 
 def main() -> int:
-    hw = IPHONE / "Hardware"
-    pdf = IPHONE / "PDF"
-    r1, s1, miss = rename_tree(hw, "hardware")
-    r2, s2, _ = rename_tree(pdf, "pdf")
-    print(f"hardware renamed={r1} unchanged={s1}")
-    print(f"pdf renamed={r2} unchanged={s2}")
-    if miss:
-        uniq = sorted(set(miss))
-        print("untranslated stems:")
-        for n in uniq:
+    roots = [Path(a) for a in sys.argv[1:]] or [IPHONE]
+    total_r = total_s = 0
+    all_miss: list[str] = []
+    for root in roots:
+        hw = root / "Hardware"
+        pdf = root / "PDF"
+        r1, s1, miss = rename_tree(hw, "hardware")
+        r2, s2, _ = rename_tree(pdf, "pdf")
+        total_r += r1 + r2
+        total_s += s1 + s2
+        all_miss.extend(miss)
+        print(f"{root}: hardware renamed={r1} unchanged={s1} pdf renamed={r2} unchanged={s2}")
+    if all_miss:
+        uniq = sorted(set(all_miss))
+        print("stems used generic Arabic:")
+        for n in uniq[:40]:
             print(" ", n)
-        return 1
     return 0
 
 

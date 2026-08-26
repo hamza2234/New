@@ -458,7 +458,14 @@ def existing_file(folder: Path, name: str) -> Path | None:
 def save_body(folder: Path, name: str, body: bytes) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     ext = detect(body) or ".bin"
-    dest = folder / f"{safe(name)}{ext}"
+    stem = safe(name)
+    try:
+        from ar_file_titles import hw_bilingual_stem, pdf_bilingual_stem
+
+        stem = pdf_bilingual_stem(stem) if ext == ".pdf" else hw_bilingual_stem(stem)
+    except Exception:
+        pass
+    dest = folder / f"{stem}{ext}"
     tmp = dest.with_suffix(dest.suffix + ".part")
     tmp.write_bytes(body)
     tmp.replace(dest)
