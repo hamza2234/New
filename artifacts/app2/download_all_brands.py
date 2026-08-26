@@ -32,8 +32,12 @@ HW = "https://circuitbitapp.com/api_data/api_link/hardware_solution.php"
 DIAGRAM = "https://circuitbitapp.com/api_data/api_link/diagram.php"
 PLACEHOLDER_WH = (900, 400)
 MIN_REAL = 20_000
-WORKERS = 3
+WORKERS = 2
 RETRIES = 2
+# CircuitBit IP-bans this VM after TLS floods. Probe once, then wait;
+# extra retries on SSL timeout keep the ban alive.
+CATALOG_RETRY_S = 900
+TLS_PROBE_URL = "https://circuitbitapp.com/"
 
 PRIORITY = ["SAMSUNG", "INFINIX", "VIVO"]
 PDF_COMPANY = {
@@ -54,7 +58,7 @@ DEV = ns["DEV"]
 
 print_lock = threading.Lock()
 stats_lock = threading.Lock()
-stats = {"ok": 0, "skip": 0, "fail": 0, "bytes": 0, "placeholder": 0}
+stats = {"ok": 0, "skip": 0, "fail": 0, "bytes": 0, "placeholder": 0, "tls": "unknown"}
 
 
 def log(msg: str) -> None:
@@ -118,6 +122,62 @@ def is_original(data: bytes) -> bool:
     return len(data) >= MIN_REAL or data.startswith(b"%PDF")
 
 
+def _is_tls_block(err: str) -> bool:
+    e = err.lower()
+    return any(
+        s in e
+        for s in (
+            "ssl connection timeout",
+            "ssl connect error",
+            "curl 35",
+        )
+    )
+
+
+def tls_up() -> bool:
+    cmd = [
+        "curl",
+        "-sS",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "--http1.1",
+        "--connect-timeout",
+        "8",
+        "--max-time",
+        "12",
+        "-k",
+        TLS_PROBE_URL,
+    ]
+    try:
+        p = subprocess.run(cmd, capture_output=True, timeout=15)
+        code = (p.stdout or b"").decode("utf-8", "replace").strip()
+        ok = p.returncode == 0 and code.isdigit() and code != "000"
+        stats["tls"] = f"up http={code}" if ok else f"blocked curl={p.returncode} http={code or '000'}"
+        return ok
+    except Exception as e:
+        stats["tls"] = f"blocked {e}"
+        return False
+
+
+def wait_until_tls(brand: str) -> None:
+    """Do not hammer the catalog while this VM's IP is TLS-blocked."""
+    if tls_up():
+        return
+    while True:
+        log(
+            f"TLS blocked ({stats['tls']}) — pausing {brand} for {CATALOG_RETRY_S}s "
+            "so the IP ban can expire (will not skip this company)"
+        )
+        write_status()
+        time.sleep(CATALOG_RETRY_S)
+        if tls_up():
+            log(f"TLS recovered ({stats['tls']}) — resume {brand}")
+            write_status()
+            return
+
+
 def http_get(url: str, timeout: int = 180) -> bytes:
     """curl only — Python SSL to this host often hangs for 25s+."""
     last: Exception | None = None
@@ -150,6 +210,8 @@ def http_get(url: str, timeout: int = 180) -> bytes:
             last = RuntimeError(f"curl {p.returncode} {err or 'empty body'}")
         except Exception as e:
             last = e
+        if _is_tls_block(str(last)):
+            raise RuntimeError(str(last))
         if attempt == 0 or attempt == RETRIES - 1:
             log(f"HTTP retry {attempt+1}/{RETRIES}: {last} {url[:90]}")
         time.sleep(0.4 * (attempt + 1) + random.random() * 0.3)
@@ -492,6 +554,7 @@ def write_status() -> None:
         f"failures: {stats['fail']}",
         f"placeholders rejected: {stats['placeholder']}",
         f"bytes this run: {stats['bytes']/1048576:.1f} MB",
+        f"tls: {stats.get('tls', 'unknown')}",
         "",
     ]
     if LIB.exists():
@@ -530,14 +593,18 @@ def main() -> int:
     write_status()
     for brand in brands:
         while True:
+            wait_until_tls(brand)
             log(f"==== BRAND {brand} hardware ====")
             try:
                 jobs = process_brand_incremental(brand)
                 break
             except Exception as e:
-                log(f"CATALOG FAIL {brand}: {e} — retry in 180s, will not skip this company")
+                wait = CATALOG_RETRY_S if _is_tls_block(str(e)) else 180
+                log(
+                    f"CATALOG FAIL {brand}: {e} — retry in {wait}s, will not skip this company"
+                )
                 write_status()
-                time.sleep(180)
+                time.sleep(wait)
         cat = LIB / "catalogs" / f"{safe(brand)}.json"
         cat.write_text(
             json.dumps({"brand": brand, "count": len(jobs), "jobs": jobs}, ensure_ascii=False, indent=2),
