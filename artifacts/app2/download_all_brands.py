@@ -264,6 +264,8 @@ def _read_stall(resp, min_bps: int = 50000, window: float = 10.0) -> bytes:
                 resp.close()
                 raise RuntimeError(f"stall {rate:.0f} B/s after {n} bytes")
             last_n, last_t = n, now
+    if n == 0:
+        raise RuntimeError("empty body")
     return b"".join(chunks)
 
 
@@ -289,6 +291,7 @@ def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
                 raise RuntimeError(f"http {r.status_code} {url[:80]}")
             body = _read_stall(r) if abort_stall else r.content
             if not body:
+                # CircuitBit often 200s an empty serve node; more TLS retries won't fill it.
                 raise RuntimeError("empty body")
             return body
         except Exception as e:
@@ -299,6 +302,8 @@ def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
             except Exception:
                 pass
             s = _new_session(proxy)
+            if "empty body" in str(e).lower():
+                raise RuntimeError("empty body") from e
         finally:
             q.put(s)
         if attempt == RETRIES - 1:
@@ -483,6 +488,10 @@ def models_with_missing_fails(brand: str) -> set[str]:
         if not m:
             continue
         model, name = m.group(1).strip(), m.group(2).strip()
+        reason = line.rsplit("(", 1)[-1].lower()
+        # Persistent CircuitBit empty serve nodes are not download bugs — skip re-LIST.
+        if "empty body" in reason:
+            continue
         # locate model folder under this brand
         hw = LIB / safe(brand) / "Hardware"
         if not hw.exists():
@@ -652,7 +661,7 @@ def download_hw_one(job: dict, idx: int, total: int) -> None:
                 continue
             body = http_get(
                 HW + "?action=serve&node=" + urllib.parse.quote(serve),
-                timeout=90 if CURL_PROXY else 180,
+                timeout=25 if CURL_PROXY else 180,
                 abort_stall=bool(CURL_PROXY),
             )
             if png_size(body) == PLACEHOLDER_WH:
@@ -677,6 +686,8 @@ def download_hw_one(job: dict, idx: int, total: int) -> None:
             return
         except Exception as e:
             last = str(e)
+            if "empty body" in last.lower() and attempt >= 1:
+                break
             time.sleep(0.5 * (attempt + 1))
     with stats_lock:
         stats["fail"] += 1
@@ -893,6 +904,13 @@ def main() -> int:
             j
             for j in jobs
             if not existing_file(hw_dir(j["brand"], j.get("path") or [j["model"]], j["model"]), j["name"])
+        ]
+        # Same-run extra pass is for timeouts; empty-body nodes just failed above.
+        missing = [
+            j
+            for j in missing
+            if f"FAIL {j['brand']} / {j['model']} / {j['name']} (empty body)"
+            not in (LIB / "download.log").read_text(encoding="utf-8", errors="replace")[-200_000:]
         ]
         if missing:
             log(f"{brand} retry missing hardware {len(missing)}")
