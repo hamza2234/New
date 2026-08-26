@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
 import subprocess
@@ -36,7 +37,7 @@ WORKERS = 2
 RETRIES = 2
 # CircuitBit IP-bans this VM after TLS floods. Probe once, then wait;
 # extra retries on SSL timeout keep the ban alive.
-CATALOG_RETRY_S = 900
+CATALOG_RETRY_S = 3600
 TLS_PROBE_URL = "https://circuitbitapp.com/"
 
 PRIORITY = ["SAMSUNG", "INFINIX", "VIVO"]
@@ -589,8 +590,17 @@ def main() -> int:
     link_iphone()
     only = [a.upper() for a in sys.argv[1:] if not a.startswith("-")]
     brands = only or brand_order()
-    log(f"START brands={brands} workers={WORKERS}")
+    log(f"START brands={brands} workers={WORKERS} catalog_retry={CATALOG_RETRY_S}s")
     write_status()
+    initial = int(os.environ.get("CB_INITIAL_SLEEP", "0") or "0")
+    if initial > 0:
+        stats["tls"] = f"quiet {initial}s before next probe"
+        log(
+            f"QUIET {initial}s before first TLS probe — will not skip Samsung "
+            "or any later company"
+        )
+        write_status()
+        time.sleep(initial)
     for brand in brands:
         while True:
             wait_until_tls(brand)
