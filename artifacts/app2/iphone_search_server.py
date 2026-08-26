@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 LIB = Path("/workspace/artifacts/app2/library")
 IPHONE = Path("/workspace/artifacts/app2/iphone_originals")
+READY = Path("/workspace/artifacts/export")
 SUPPORTED = Path("/workspace/artifacts/app2/supported_models.json")
 STATUS = LIB / "STATUS.txt"
 LOG = LIB / "download.log"
@@ -123,7 +124,7 @@ HTML = r"""<!DOCTYPE html>
 <body>
 <header>
   <h1>بحث ملفات CircuitBit</h1>
-  <div class="meta"><a class="back" href="#" id="progLink">مخرجات التحميل المباشرة</a></div>
+  <div class="meta"><a class="back" href="#" id="progLink">مخرجات التحميل المباشرة</a> · <a class="back" href="#" id="dlLink">تنزيل آيفون + سامسونج</a></div>
   <input id="q" type="search" placeholder="ابحث: samsung a15 / infinix hot 30 / vivo y17 / lcd" autofocus/>
   <div class="meta" id="meta">جاري التحميل...</div>
 </header>
@@ -133,6 +134,8 @@ const TOKEN = location.pathname.split('/').filter(Boolean)[0] || '';
 const base = TOKEN ? '/' + TOKEN : '';
 const progLink = document.getElementById('progLink');
 if (progLink) progLink.href = base + '/progress';
+const dlLink = document.getElementById('dlLink');
+if (dlLink) dlLink.href = base + '/ready';
 const qel = document.getElementById('q');
 const list = document.getElementById('list');
 const meta = document.getElementById('meta');
@@ -211,6 +214,47 @@ setInterval(tick, 3000);
 </html>
 """
 
+READY_HTML = r"""<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>تنزيل آيفون وسامسونج</title>
+<style>
+  :root { --bg:#0f1419; --card:#1a2330; --txt:#eef3f8; --mut:#9bb0c3; --acc:#3d9cf0; }
+  body { margin:0; font-family:system-ui,Tahoma,sans-serif; background:var(--bg); color:var(--txt); padding:18px; }
+  a { color:var(--acc); }
+  .card { background:var(--card); border-radius:14px; padding:16px; margin:12px 0; }
+  .mut { color:var(--mut); font-size:14px; }
+  h1 { font-size:20px; }
+</style>
+</head>
+<body>
+<h1>تنزيل المكتمل فقط</h1>
+<p class="mut">آيفون + سامسونج. مجلد لكل شركة، ومجلد لكل هاتف (صور + PDF). فكّ الملف بـ 7-Zip أو WinRAR.</p>
+<p class="mut"><a href="#" id="back">البحث</a> · <a href="#" id="prog">المخرجات</a></p>
+<div class="card" id="box">جاري فحص الأرشيف...</div>
+<script>
+const TOKEN = location.pathname.split('/').filter(Boolean)[0] || '';
+const base = TOKEN ? '/' + TOKEN : '';
+document.getElementById('back').href = base + '/';
+document.getElementById('prog').href = base + '/progress';
+async function go(){
+  const r = await fetch(base + '/api/ready', {cache:'no-store'});
+  const d = await r.json();
+  const box = document.getElementById('box');
+  box.innerHTML = (d.files||[]).map(f => {
+    if (!f.ready) return '<p><b>'+f.name+'</b><br>جارٍ تجهيز الأرشيف... '+f.note+'</p>';
+    return '<p><a href="'+base+'/ready/'+encodeURIComponent(f.name)+'">تنزيل '+f.name+'</a><br><span class="mut">'+f.gb+' GB · '+f.note+'</span></p>';
+  }).join('') || 'لا يوجد أرشيف بعد';
+}
+go();
+setInterval(go, 5000);
+</script>
+</body>
+</html>
+"""
+
 
 def _catalog_models() -> dict[str, int]:
     if not SUPPORTED.exists():
@@ -262,6 +306,40 @@ def progress_payload(n_log: int = 50) -> dict:
     }
 
 
+READY_FILES = {
+    "IPHONE.tar": "آيفون — مجلد لكل هاتف (صور + PDF)",
+    "SAMSUNG.tar": "سامسونج — مجلد لكل هاتف (صور + PDF)",
+}
+
+
+def ready_payload() -> dict:
+    files = []
+    for name, note in READY_FILES.items():
+        p = READY / name
+        part = READY / (name + ".part")
+        if p.is_file() and p.stat().st_size > 1_000_000:
+            files.append(
+                {
+                    "name": name,
+                    "ready": True,
+                    "gb": round(p.stat().st_size / 1e9, 2),
+                    "note": note,
+                }
+            )
+        elif part.is_file():
+            files.append(
+                {
+                    "name": name,
+                    "ready": False,
+                    "gb": round(part.stat().st_size / 1e9, 2),
+                    "note": f"جارٍ الضغط {round(part.stat().st_size / 1e9, 2)} GB — {note}",
+                }
+            )
+        else:
+            files.append({"name": name, "ready": False, "gb": 0, "note": "لم يبدأ الأرشيف بعد — " + note})
+    return {"files": files}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         print(f"{self.address_string()} {fmt % args}", flush=True)
@@ -288,6 +366,52 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
+    def _send_ready_tar(self, name: str) -> None:
+        if name not in READY_FILES:
+            return self._err(404, "not found")
+        path = READY / name
+        if not path.is_file() or path.stat().st_size < 1_000_000:
+            return self._err(404, "archive not ready yet")
+        size = path.stat().st_size
+        start, end = 0, size - 1
+        rng = self.headers.get("Range") or ""
+        code = 200
+        if rng.startswith("bytes="):
+            spec = rng.split("=", 1)[1].split(",")[0].strip()
+            a, _, b = spec.partition("-")
+            try:
+                if a:
+                    start = int(a)
+                if b:
+                    end = int(b)
+            except ValueError:
+                start, end = 0, size - 1
+            if start < 0 or start >= size:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+            end = min(end, size - 1)
+            code = 206
+        length = end - start + 1
+        self.send_response(code)
+        self.send_header("Content-Type", "application/x-tar")
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        if code == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        with path.open("rb") as f:
+            f.seek(start)
+            left = length
+            while left > 0:
+                chunk = f.read(min(1024 * 1024, left))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                left -= len(chunk)
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
@@ -296,9 +420,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._ok(HTML.encode())
         if path in (prefix + "/progress", prefix + "/progress/"):
             return self._ok(PROGRESS_HTML.encode())
+        if path in (prefix + "/ready", prefix + "/ready/"):
+            return self._ok(READY_HTML.encode())
         if not path.startswith(prefix + "/") and path != prefix:
             return self._err(404, "not found")
         rest = path[len(prefix) :] or "/"
+
+        if rest.startswith("/api/ready"):
+            payload = json.dumps(ready_payload(), ensure_ascii=False).encode()
+            return self._ok(payload, "application/json; charset=utf-8")
+
+        if rest.startswith("/ready/"):
+            return self._send_ready_tar(rest.split("/ready/", 1)[1])
 
         if rest.startswith("/api/progress"):
             n = parse_qs(parsed.query).get("n", ["50"])[0]
