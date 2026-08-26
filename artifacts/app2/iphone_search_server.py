@@ -14,6 +14,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 LIB = Path("/workspace/artifacts/app2/library")
 IPHONE = Path("/workspace/artifacts/app2/iphone_originals")
+SUPPORTED = Path("/workspace/artifacts/app2/supported_models.json")
+STATUS = LIB / "STATUS.txt"
+LOG = LIB / "download.log"
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("IPHONE_SITE_PORT", "8765"))
 TOKEN = os.environ.get("IPHONE_SITE_TOKEN", "cbiphone")
@@ -120,6 +123,7 @@ HTML = r"""<!DOCTYPE html>
 <body>
 <header>
   <h1>بحث ملفات CircuitBit</h1>
+  <div class="meta"><a class="back" href="#" id="progLink">مخرجات التحميل المباشرة</a></div>
   <input id="q" type="search" placeholder="ابحث: samsung a15 / infinix hot 30 / vivo y17 / lcd" autofocus/>
   <div class="meta" id="meta">جاري التحميل...</div>
 </header>
@@ -127,6 +131,8 @@ HTML = r"""<!DOCTYPE html>
 <script>
 const TOKEN = location.pathname.split('/').filter(Boolean)[0] || '';
 const base = TOKEN ? '/' + TOKEN : '';
+const progLink = document.getElementById('progLink');
+if (progLink) progLink.href = base + '/progress';
 const qel = document.getElementById('q');
 const list = document.getElementById('list');
 const meta = document.getElementById('meta');
@@ -155,6 +161,105 @@ run();
 </body>
 </html>
 """
+
+
+PROGRESS_HTML = r"""<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>مخرجات تحميل CircuitBit</title>
+<style>
+  :root { --bg:#0b1016; --card:#151d28; --txt:#eef3f8; --mut:#9bb0c3; --acc:#5ee0a0; --warn:#f0c14d; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; background:var(--bg); color:var(--txt); }
+  header { padding:14px 14px 6px; position:sticky; top:0; background:var(--bg); border-bottom:1px solid #223044; }
+  h1 { font-size:17px; margin:0 0 6px; font-family:system-ui,Tahoma,sans-serif; }
+  .meta { color:var(--mut); font-size:13px; font-family:system-ui,Tahoma,sans-serif; }
+  a { color:var(--acc); }
+  pre.status { white-space:pre-wrap; background:var(--card); margin:10px 12px; padding:12px; border-radius:10px; font-size:13px; line-height:1.45; }
+  pre.log { white-space:pre-wrap; background:#070b10; margin:0 12px 20px; padding:12px; border-radius:10px; font-size:12px; line-height:1.5; min-height:50vh; border:1px solid #223044; }
+  .ok { color:var(--acc); } .fail { color:#ff8a8a; }
+</style>
+</head>
+<body>
+<header>
+  <h1>مخرجات التحميل المباشرة</h1>
+  <div class="meta">يتحدث كل 3 ثوانٍ · <a id="back" href="#">البحث</a> · <span id="tick">...</span></div>
+</header>
+<pre class="status" id="status">جاري التحميل...</pre>
+<pre class="log" id="log"></pre>
+<script>
+const TOKEN = location.pathname.split('/').filter(Boolean)[0] || '';
+const base = TOKEN ? '/' + TOKEN : '';
+document.getElementById('back').href = base + '/';
+async function tick(){
+  try {
+    const r = await fetch(base + '/api/progress?n=60', {cache:'no-store'});
+    const d = await r.json();
+    document.getElementById('status').textContent = d.status || '';
+    document.getElementById('log').textContent = (d.log || []).join('\n');
+    document.getElementById('tick').textContent = d.now + ' · أسطر السجل: ' + (d.log||[]).length;
+  } catch (e) {
+    document.getElementById('tick').textContent = 'تعذر التحديث';
+  }
+}
+tick();
+setInterval(tick, 3000);
+</script>
+</body>
+</html>
+"""
+
+
+def _catalog_models() -> dict[str, int]:
+    if not SUPPORTED.exists():
+        return {}
+    try:
+        data = json.loads(SUPPORTED.read_text())
+        out: dict[str, int] = {}
+        for m in data.get("models") or []:
+            b = str(m.get("brand") or "").upper()
+            out[b] = out.get(b, 0) + 1
+        return out
+    except Exception:
+        return {}
+
+
+def progress_payload(n_log: int = 50) -> dict:
+    n_log = max(10, min(int(n_log or 50), 200))
+    status = STATUS.read_text(encoding="utf-8", errors="replace") if STATUS.exists() else ""
+    lines: list[str] = []
+    if LOG.exists():
+        raw = LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = raw[-n_log:]
+    cat = _catalog_models()
+    brands = []
+    for brand, root in roots():
+        hw = root / "Hardware"
+        pdf = root / "PDF"
+        if hw.is_symlink():
+            hw = hw.resolve()
+        if pdf.is_symlink():
+            pdf = pdf.resolve()
+        png = list(hw.rglob("*.png")) if hw.exists() else []
+        pdfs = list(pdf.rglob("*.pdf")) if pdf.exists() else []
+        models = {p.parent.name for p in png}
+        brands.append(
+            {
+                "brand": brand,
+                "hardware": len(png),
+                "models": len(models),
+                "catalog": cat.get(brand, 0),
+                "pdf": len(pdfs),
+            }
+        )
+    return {
+        "now": time.strftime("%H:%M:%S UTC", time.gmtime()),
+        "status": status.strip(),
+        "log": lines,
+        "brands": brands,
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -189,9 +294,31 @@ class Handler(BaseHTTPRequestHandler):
         prefix = self._prefix()
         if path in ("/", prefix, prefix + "/"):
             return self._ok(HTML.encode())
+        if path in (prefix + "/progress", prefix + "/progress/"):
+            return self._ok(PROGRESS_HTML.encode())
         if not path.startswith(prefix + "/") and path != prefix:
             return self._err(404, "not found")
         rest = path[len(prefix) :] or "/"
+
+        if rest.startswith("/api/progress"):
+            n = parse_qs(parsed.query).get("n", ["50"])[0]
+            try:
+                n_log = int(n)
+            except ValueError:
+                n_log = 50
+            payload = json.dumps(progress_payload(n_log), ensure_ascii=False).encode()
+            return self._ok(payload, "application/json; charset=utf-8")
+
+        if rest.startswith("/api/log"):
+            n = parse_qs(parsed.query).get("n", ["80"])[0]
+            try:
+                n_log = max(10, min(int(n), 200))
+            except ValueError:
+                n_log = 80
+            text = ""
+            if LOG.exists():
+                text = "\n".join(LOG.read_text(encoding="utf-8", errors="replace").splitlines()[-n_log:])
+            return self._ok(text.encode(), "text/plain; charset=utf-8")
 
         if rest.startswith("/api/search"):
             q = parse_qs(parsed.query).get("q", [""])[0]
