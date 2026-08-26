@@ -170,7 +170,10 @@ def section_dir(brand: str, section: str, path: list[str]) -> Path:
 
 
 def hw_dir(brand: str, path: list[str] | None = None, model: str = "") -> Path:
-    parts = list(path or [])
+    if isinstance(path, str):
+        parts = [path]
+    else:
+        parts = list(path or [])
     if not parts and model:
         parts = [model]
     return section_dir(brand, "Hardware", parts)
@@ -344,9 +347,10 @@ def download_jobs(jobs: list[dict], brand: str) -> None:
             for fut in as_completed(futs):
                 fut.result()
         done_models += 1
+        folder = hw_dir(brand, group[0].get("path") or [model], model)
         have = sum(
             1
-            for p in hw_dir(brand, model).glob("*")
+            for p in folder.glob("*")
             if p.is_file() and not p.name.endswith(".part")
         )
         log(
