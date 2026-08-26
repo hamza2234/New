@@ -291,35 +291,18 @@ def tls_up() -> bool:
 
 
 def wait_until_tls(brand: str) -> None:
-    """Do not hammer the catalog while this VM's IP is TLS-blocked."""
-    current_proxies()
-    if PROXY_POOL:
-        stats["tls"] = f"proxy pool={len(PROXY_POOL)}"
-        return
-    # Farm still spinning up — wait for the first HTTP-200 hop, do not use VM IP.
+    """Wait for a live WARP hop. Never TLS-probe CircuitBit on the VM IP."""
     t0 = time.time()
-    while time.time() - t0 < 180:
+    while True:
         current_proxies()
         if PROXY_POOL:
             stats["tls"] = f"proxy pool={len(PROXY_POOL)}"
-            log(f"WARP hop ready n={len(PROXY_POOL)} — resume {brand}")
+            if time.time() - t0 >= 3:
+                log(f"WARP hop ready n={len(PROXY_POOL)} — resume {brand}")
             return
         log(f"waiting for live WARP hop before {brand} ({int(time.time()-t0)}s)")
         write_status()
         time.sleep(3)
-    if tls_up():
-        return
-    while True:
-        log(
-            f"TLS blocked ({stats['tls']}) — pausing {brand} for {CATALOG_RETRY_S}s "
-            "so the IP ban can expire (will not skip this company)"
-        )
-        write_status()
-        time.sleep(CATALOG_RETRY_S)
-        if tls_up():
-            log(f"TLS recovered ({stats['tls']}) — resume {brand}")
-            write_status()
-            return
 
 
 def _read_stall(resp, min_bps: int = 50000, window: float = 10.0) -> bytes:
@@ -348,6 +331,9 @@ def _read_stall(resp, min_bps: int = 50000, window: float = 10.0) -> bytes:
 def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
     """Keep-alive HTTPS via WARP SOCKS. New TLS per curl was the bottleneck."""
     current_proxies()
+    if not PROXY_POOL:
+        wait_until_tls("http_get")
+        current_proxies()
     if not _HAS_REQUESTS or not PROXY_POOL:
         return _http_get_curl(url, timeout=timeout, abort_stall=abort_stall)
     last: Exception | None = None
@@ -397,6 +383,9 @@ def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
 def _http_get_curl(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
     last: Exception | None = None
     for attempt in range(RETRIES):
+        current_proxies()
+        if not PROXY_POOL:
+            wait_until_tls("curl")
         hdr = headers()
         cmd = [
             "curl",
@@ -794,6 +783,7 @@ def download_jobs(jobs: list[dict], brand: str) -> None:
                 stats["skip"] += 1
         else:
             pending.append(j)
+    wait_until_tls(brand)
     log(
         f"{brand} hardware catalog={len(jobs)} pending={len(pending)} "
         f"skip={len(jobs)-len(pending)} workers={WORKERS} proxies={len(current_proxies())}"
