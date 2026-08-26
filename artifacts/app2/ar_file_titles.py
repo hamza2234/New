@@ -38,6 +38,10 @@ HW_AR: dict[str, str] = {
     "DIODA MODE (SANWA-CD800A) CONNECTOR A": "وضع الدايود الكونكتر أ",
     "DIODA MODE (SANWA-CD800A) CONNECTOR B": "وضع الدايود الكونكتر ب",
     "DIODA MODE (SANWA-CD800A) CONNECTOR C": "وضع الدايود الكونكتر ج",
+    "DIODA MODE (SUNSHINE DT17DN) CONNECTOR": "وضع الدايود الكونكتر",
+    "DIODA MODE (SUNSHINE DT17DN) CONNECTOR A": "وضع الدايود الكونكتر أ",
+    "DIODA MODE (SUNSHINE DT17DN) CONNECTOR B": "وضع الدايود الكونكتر ب",
+    "DIODA MODE (SUNSHINE DT17DN) CONNECTOR C": "وضع الدايود الكونكتر ج",
     "FINGERPRINT": "مخطط عطل البصمة",
     "FLOOD ILLUMINATOR": "مخطط عطل كشاف الوجه",
     "HANDSFREE": "مخطط عطل الهاندز فري",
@@ -66,6 +70,7 @@ HW_AR: dict[str, str] = {
     "TOUCHSCREEN B": "مخطط عطل اللمس ب",
     "TOUCHSCREEN C": "مخطط عطل اللمس ج",
     "WIFI, BLUETOOTH & GPS": "مخطط عطل واي فاي وبلوتوث وجي بي إس",
+    "Screenshot 2026-04-06 111308": "لقطة شاشة",
 }
 
 _HAS_AR = re.compile(r"[\u0600-\u06FF]")

@@ -62,6 +62,7 @@ PRIORITY = ["SAMSUNG", "INFINIX", "VIVO"]
 API_BRAND = {
     "GOOGLE PIXEL": "GOOGLE",
     "NOTING PHONE": "NOTING",
+    "IPHONE": "APPLE",
 }
 PDF_COMPANY = {
     "SAMSUNG": "Samsung",
@@ -656,7 +657,7 @@ def process_brand_incremental(brand: str) -> list[dict]:
         i = 0
         while i < len(todo):
             chunk = todo[i : i + LIST_BATCH]
-            i += LIST_BATCH
+            i += len(chunk)
             batch_jobs: list[dict] = []
             deeper: list[tuple[str, list[str]]] = []
 
