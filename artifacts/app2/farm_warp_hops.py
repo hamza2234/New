@@ -24,6 +24,23 @@ WIREPROXY = EGRESS / "wireproxy"
 LIVE = EGRESS / "live_proxies.txt"
 STATE = EGRESS / "hop_state.json"
 LOG = EGRESS / "hop_farm.log"
+FAILED = EGRESS / "hop_failed.json"
+
+
+def load_failed() -> dict[int, float]:
+    if not FAILED.exists():
+        return {}
+    try:
+        raw = json.loads(FAILED.read_text())
+        return {int(k): float(v) for k, v in raw.items()}
+    except Exception:
+        return {}
+
+
+def save_failed(d: dict[int, float]) -> None:
+    tmp = FAILED.with_suffix(".tmp")
+    tmp.write_text(json.dumps({str(k): v for k, v in d.items()}))
+    tmp.replace(FAILED)
 
 UA = "CB_Secure_Engine_v3.0_17"
 TLS_URL = "https://circuitbitapp.com/"
@@ -266,7 +283,8 @@ def main() -> int:
     live: dict[int, int] = {}  # index -> pid
     next_n = next_index()
     last_tls_check = 0.0
-    log(f"FARM start target={TARGET_LIVE} next=w{next_n} prewarm={PREWARM}")
+    failed_until: dict[int, float] = load_failed()
+    log(f"FARM start target={TARGET_LIVE} next=w{next_n} prewarm={PREWARM} cooldown={len(failed_until)}")
     for n, pid in running_wireproxy().items():
         log(f"startup kill leftover w{n} pid={pid}")
         kill_pid(pid)
@@ -293,25 +311,32 @@ def main() -> int:
                 else:
                     log(f"TLS dead w{n} :{port_for(n)} pid={pid} — kill")
                     kill_pid(pid)
+                    failed_until[n] = time.time() + 3600
+                    save_failed(failed_until)
             live = still
             last_tls_check = time.time()
             urls = [proxy_url(port_for(n)) for n in sorted(live)]
             write_live(urls)
             log(f"live={len(live)} {urls}")
 
-        # pre-register unused confs
-        unused = unused_confs()
+        # pre-register unused confs (skip recently TLS-failed accounts)
+        unused = [n for n in unused_confs() if time.time() >= failed_until.get(n, 0)]
         missing = PREWARM - len(unused)
         if missing > 0:
             batch = list(range(next_n, next_n + missing))
             next_n += missing
             with ThreadPoolExecutor(max_workers=min(8, len(batch))) as ex:
                 list(ex.map(register_one, batch))
-            unused = unused_confs()
+            unused = [n for n in unused_confs() if time.time() >= failed_until.get(n, 0)]
 
-        # fill up to TARGET_LIVE
+        # Always mint fresh wgcf accounts when short — recycled confs are usually banned.
         if len(live) < TARGET_LIVE:
-            candidates = [n for n in unused if n not in live][:3]
+            n_new = min(3, TARGET_LIVE - len(live) + 1)
+            batch_ids = list(range(next_n, next_n + n_new))
+            next_n += n_new
+            with ThreadPoolExecutor(max_workers=min(8, len(batch_ids))) as ex:
+                list(ex.map(register_one, batch_ids))
+            candidates = [n for n in batch_ids if conf_path(n).exists() and n not in live]
             started: list[int] = []
             for n in candidates:
                 pid = start_hop(n)
@@ -347,6 +372,12 @@ def main() -> int:
                             log(f"TLS 200 w{n} :{port_for(n)} (retest)")
                         else:
                             log(f"TLS FAIL w{n} :{port_for(n)}")
+                            failed_until[n] = time.time() + 3600
+                            save_failed(failed_until)
+                for n in batch:
+                    if not hs_ok.get(n):
+                        failed_until[n] = time.time() + 600
+                        save_failed(failed_until)
             # keep previous live + new 200s; kill the rest of this round
             keep_pids = {**{k: v for k, v in live.items() if k not in started}, **ok_new}
             for n in started:
