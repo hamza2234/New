@@ -1,0 +1,17 @@
+# Downloaded CircuitBit originals — never commit these
+artifacts/app2/library/
+artifacts/app2/iphone_originals/
+artifacts/app2/iphone_originals_complete.zip
+artifacts/app2/*.apk
+artifacts/app2/*.zip
+artifacts/app2/**/*.png
+artifacts/app2/**/*.pdf
+artifacts/app2/**/*.jpg
+artifacts/app2/**/*.log
+artifacts/__pycache__/
+artifacts/iphone_all_organized/
+artifacts/iphone_organized/
+artifacts/iphone_organized.zip
+artifacts/iphone_originals_only.zip
+IPHONE_FILES_HERE
+*.apk
