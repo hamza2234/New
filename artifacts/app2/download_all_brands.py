@@ -453,9 +453,17 @@ def process_brand_incremental(brand: str) -> list[dict]:
                 )
                 continue
             todo.append((fol["node"], cpath))
+        todo.sort(
+            key=lambda t: (
+                0 if t[1] and str(t[1][-1]).upper().startswith("A ") else 1,
+                t[1],
+            )
+        )
 
-        for i in range(0, len(todo), LIST_BATCH):
+        i = 0
+        while i < len(todo):
             chunk = todo[i : i + LIST_BATCH]
+            i += LIST_BATCH
             batch_jobs: list[dict] = []
             deeper: list[tuple[str, list[str]]] = []
 
@@ -484,9 +492,16 @@ def process_brand_incremental(brand: str) -> list[dict]:
                         }
                         for f in files_i
                     ]
-                kids = [
-                    (f["node"], cpath + [f.get("name") or "folder"]) for f in folders_i
-                ]
+                kids = []
+                for f in folders_i:
+                    cp = cpath + [f.get("name") or "folder"]
+                    have_c = disk_originals(hw_dir(brand, cp, cp[-1]))
+                    if have_c and cp[-1] not in relist:
+                        log(
+                            f"SKIP LIST {brand} {' / '.join(cp)}: {len(have_c)} files already on disk"
+                        )
+                        continue
+                    kids.append((f["node"], cp))
                 return jobs_i, kids
 
             with ThreadPoolExecutor(max_workers=min(LIST_BATCH, len(chunk))) as ex:
@@ -498,8 +513,9 @@ def process_brand_incremental(brand: str) -> list[dict]:
             if batch_jobs:
                 all_jobs.extend(batch_jobs)
                 download_jobs(batch_jobs, brand)
-            for node_d, path_d in deeper:
-                rec(node_d, path_d)
+            # Keep listing in parallel batches instead of one model at a time.
+            deeper.sort(key=lambda t: (0 if t[1] and str(t[1][0]).upper().startswith("A ") else 1, t[1]))
+            todo.extend(deeper)
 
     rec(None, [])
     return all_jobs
