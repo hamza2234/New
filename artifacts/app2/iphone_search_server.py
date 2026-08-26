@@ -228,7 +228,7 @@ HTML = r"""<!DOCTYPE html>
 <body>
 <header>
   <h1>بحث ملفات CircuitBit</h1>
-  <div class="meta"><a class="back" href="#" id="driveLink">شاشة رفع درايف</a> · <a class="back" href="#" id="progLink">مخرجات التحميل</a> · <a class="back" href="#" id="dlLink">تنزيل آيفون + سامسونج</a></div>
+  <div class="meta"><a class="back" href="#" id="homeLink">مراقبة التقدم</a> · <a class="back" href="#" id="driveLink">شاشة رفع درايف</a> · <a class="back" href="#" id="progLink">مخرجات التحميل</a> · <a class="back" href="#" id="dlLink">تنزيل آيفون + سامسونج</a></div>
   <input id="q" type="search" placeholder="ابحث: samsung a15 / infinix hot 30 / vivo y17 / lcd" autofocus/>
   <div class="meta" id="meta">جاري التحميل...</div>
 </header>
@@ -236,6 +236,8 @@ HTML = r"""<!DOCTYPE html>
 <script>
 const TOKEN = location.pathname.split('/').filter(Boolean)[0] || '';
 const base = TOKEN ? '/' + TOKEN : '';
+const homeLink = document.getElementById('homeLink');
+if (homeLink) homeLink.href = base + '/';
 const driveLink = document.getElementById('driveLink');
 if (driveLink) driveLink.href = base + '/drive';
 const progLink = document.getElementById('progLink');
@@ -294,14 +296,15 @@ PROGRESS_HTML = r"""<!DOCTYPE html>
 <body>
 <header>
   <h1>مخرجات التحميل المباشرة</h1>
-  <div class="meta">يتحدث كل 3 ثوانٍ · <a id="drive" href="#">شاشة رفع درايف</a> · <a id="back" href="#">البحث</a> · <span id="tick">...</span></div>
+  <div class="meta">يتحدث كل 3 ثوانٍ · <a id="home" href="#">مراقبة التقدم</a> · <a id="drive" href="#">شاشة رفع درايف</a> · <a id="back" href="#">البحث</a> · <span id="tick">...</span></div>
 </header>
 <pre class="status" id="status">جاري التحميل...</pre>
 <pre class="log" id="log"></pre>
 <script>
 const TOKEN = location.pathname.split('/').filter(Boolean)[0] || '';
 const base = TOKEN ? '/' + TOKEN : '';
-document.getElementById('back').href = base + '/';
+document.getElementById('home').href = base + '/';
+document.getElementById('back').href = base + '/search';
 document.getElementById('drive').href = base + '/drive';
 async function tick(){
   try {
@@ -339,12 +342,13 @@ READY_HTML = r"""<!DOCTYPE html>
 <body>
 <h1>تنزيل المكتمل فقط</h1>
 <p class="mut">آيفون + سامسونج. مجلد لكل شركة، ومجلد لكل هاتف (صور + PDF). فكّ الملف بـ 7-Zip أو WinRAR.</p>
-<p class="mut"><a href="#" id="back">البحث</a> · <a href="#" id="drive">شاشة رفع درايف</a> · <a href="#" id="prog">المخرجات</a></p>
+<p class="mut"><a href="#" id="home">مراقبة التقدم</a> · <a href="#" id="back">البحث</a> · <a href="#" id="drive">شاشة رفع درايف</a> · <a href="#" id="prog">المخرجات</a></p>
 <div class="card" id="box">جاري فحص الأرشيف...</div>
 <script>
 const TOKEN = location.pathname.split('/').filter(Boolean)[0] || '';
 const base = TOKEN ? '/' + TOKEN : '';
-document.getElementById('back').href = base + '/';
+document.getElementById('home').href = base + '/';
+document.getElementById('back').href = base + '/search';
 document.getElementById('drive').href = base + '/drive';
 document.getElementById('prog').href = base + '/progress';
 async function go(){
@@ -369,7 +373,7 @@ DRIVE_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>رفع الآيفون إلى Google Drive</title>
+<title>رفع الآيفون إلى جوجل درايف</title>
 <style>
   :root { --bg:#0b1016; --card:#151d28; --txt:#eef3f8; --mut:#9bb0c3; --acc:#5ee0a0; --bar:#3d9cf0; }
   * { box-sizing:border-box; }
@@ -390,9 +394,9 @@ DRIVE_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>شاشة رفع درايف</h1>
-  <div class="mut">مجلد <b>Phone X</b> · آيفون + آيباد · يتحدث كل 3 ثوانٍ</div>
-  <div class="mut" style="margin-top:8px"><a href="#" id="back">البحث</a> · <a href="#" id="prog">سجل التحميل</a></div>
+  <h1>رفع الآيفون إلى جوجل درايف</h1>
+  <div class="mut">المجلد: <b>Phone X</b> · آيفون + آيباد · التحديث كل 3 ثوانٍ</div>
+  <div class="mut" style="margin-top:8px"><a href="#" id="home">مراقبة التقدم</a> · <a href="#" id="search">البحث</a> · <a href="#" id="prog">سجل التحميل</a></div>
 </header>
 <div class="card">
   <div id="state" class="big run">جاري القراءة...</div>
@@ -410,14 +414,15 @@ DRIVE_HTML = r"""<!DOCTYPE html>
 <script>
 const TOKEN = location.pathname.split('/').filter(Boolean)[0] || '';
 const base = TOKEN ? '/' + TOKEN : '';
-document.getElementById('back').href = base + '/';
+document.getElementById('home').href = base + '/';
+document.getElementById('search').href = base + '/search';
 document.getElementById('prog').href = base + '/progress';
 function arState(s){
   if (s === 'done') return ['اكتمل الرفع إلى درايف', 'ok'];
   if (s === 'pdf') return ['جارٍ رفع ملفات PDF', 'run'];
   if (s === 'hardware') return ['جارٍ رفع صور الهاردوير', 'run'];
   if (s === 'stopped') return ['توقف الرفع — سأعيد المحاولة', 'bad'];
-  return ['جارٍ الرفع إلى Google Drive', 'run'];
+  return ['جارٍ الرفع إلى جوجل درايف', 'run'];
 }
 async function tick(){
   try {
@@ -436,6 +441,124 @@ async function tick(){
     document.getElementById('recent').innerHTML = (d.recent || []).map(x => '<li>'+x+'</li>').join('') || '<li>لا شيء بعد</li>';
   } catch (e) {
     document.getElementById('state').textContent = 'تعذر تحديث الصفحة';
+  }
+}
+tick();
+setInterval(tick, 3000);
+</script>
+</body>
+</html>
+"""
+
+
+MONITOR_HTML = r"""<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>مراقبة التقدم</title>
+<style>
+  :root { --bg:#0b1016; --card:#151d28; --txt:#eef3f8; --mut:#9bb0c3; --acc:#5ee0a0; --bar:#3d9cf0; --warn:#f0c14d; --bad:#ff8a8a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Tahoma,sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:18px 16px 6px; }
+  h1 { font-size:24px; margin:0 0 6px; }
+  h2 { font-size:16px; margin:0 0 10px; }
+  .mut { color:var(--mut); font-size:14px; }
+  a { color:var(--bar); }
+  .card { background:var(--card); border-radius:16px; padding:16px; margin:12px 16px; }
+  .big { font-size:26px; font-weight:700; }
+  .pct { font-size:42px; font-weight:800; }
+  .bar { height:18px; background:#0e1620; border-radius:99px; overflow:hidden; margin:12px 0 8px; }
+  .bar > span { display:block; height:100%; background:linear-gradient(90deg,#3d9cf0,#5ee0a0); width:0%; transition:width .4s; }
+  .row { display:flex; justify-content:space-between; gap:8px; margin:8px 0; font-size:15px; }
+  .ok { color:var(--acc); } .run { color:var(--warn); } .wait { color:var(--mut); } .bad { color:var(--bad); }
+  .brand { display:flex; flex-direction:column; gap:4px; padding:10px 0; border-bottom:1px solid #223044; }
+  .brand:last-child { border-bottom:0; }
+  .brand .top { display:flex; justify-content:space-between; gap:8px; align-items:baseline; }
+  .mini { height:8px; background:#0e1620; border-radius:99px; overflow:hidden; }
+  .mini > span { display:block; height:100%; background:#3d9cf0; }
+  .mini.done > span { background:#5ee0a0; }
+  .nav { display:flex; flex-wrap:wrap; gap:10px; margin-top:10px; }
+  .nav a { background:#121a24; padding:8px 12px; border-radius:10px; text-decoration:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>مراقبة التقدم</h1>
+  <div class="mut" id="tick">يتحدث كل 3 ثوانٍ</div>
+  <div class="nav">
+    <a href="#" id="drive">رفع درايف</a>
+    <a href="#" id="search">البحث في الملفات</a>
+    <a href="#" id="prog">سجل التحميل</a>
+    <a href="#" id="ready">تنزيل الأرشيف</a>
+  </div>
+</header>
+<div class="card">
+  <h2>رفع الآيفون إلى جوجل درايف</h2>
+  <div id="driveState" class="big run">جاري القراءة...</div>
+  <div class="pct" id="drivePct">—</div>
+  <div class="bar"><span id="driveFill"></span></div>
+  <div class="row"><span>صور الهاردوير</span><span id="hw">—</span></div>
+  <div class="row"><span>ملفات PDF</span><span id="pdf">—</span></div>
+  <div class="row"><span>الحجم في المجلد Phone X</span><span id="gb">—</span></div>
+  <div class="mut" id="driveNote"></div>
+</div>
+<div class="card">
+  <h2>تحميل الشركات من CircuitBit</h2>
+  <div id="dlState" class="big run">جاري القراءة...</div>
+  <div class="mut" id="dlNote"></div>
+  <div class="bar"><span id="dlFill"></span></div>
+  <div class="row"><span>الشركات المكتملة</span><span id="dlCount">—</span></div>
+  <div id="brands"></div>
+</div>
+<script>
+const TOKEN = location.pathname.split('/').filter(Boolean)[0] || '';
+const base = TOKEN ? '/' + TOKEN : '';
+document.getElementById('drive').href = base + '/drive';
+document.getElementById('search').href = base + '/search';
+document.getElementById('prog').href = base + '/progress';
+document.getElementById('ready').href = base + '/ready';
+function driveTxt(s){
+  if (s === 'done') return ['اكتمل رفع الآيفون إلى درايف', 'ok'];
+  if (s === 'pdf') return ['جارٍ رفع ملفات PDF', 'run'];
+  if (s === 'hardware') return ['جارٍ رفع صور الهاردوير', 'run'];
+  if (s === 'stopped') return ['توقف الرفع', 'bad'];
+  return ['جارٍ الرفع', 'run'];
+}
+function brandHtml(b){
+  const cls = b.state === 'done' ? 'ok' : (b.state === 'paused' ? 'run' : 'wait');
+  const mini = b.state === 'done' ? 'done' : '';
+  return `<div class="brand">
+    <div class="top"><b>${b.ar}</b><span class="${cls}">${b.state_ar} · ${b.pct}%</span></div>
+    <div class="mini ${mini}"><span style="width:${b.pct}%"></span></div>
+    <div class="mut">موديلات ${b.models} من ${b.catalog} · صور ${b.hardware} · PDF ${b.pdf}</div>
+  </div>`;
+}
+async function tick(){
+  try {
+    const r = await fetch(base + '/api/monitor', {cache:'no-store'});
+    const d = await r.json();
+    const drv = d.drive || {};
+    const [txt, cls] = driveTxt(drv.state);
+    const st = document.getElementById('driveState');
+    st.textContent = txt;
+    st.className = 'big ' + cls;
+    document.getElementById('drivePct').textContent = (drv.pct || 0) + '%';
+    document.getElementById('driveFill').style.width = (drv.pct || 0) + '%';
+    document.getElementById('hw').textContent = (drv.hw_up || 0) + ' من ' + (drv.hw_need || 0);
+    document.getElementById('pdf').textContent = (drv.pdf_up || 0) + ' من ' + (drv.pdf_need || 0);
+    document.getElementById('gb').textContent = (drv.gb || 0) + ' جيجا';
+    document.getElementById('driveNote').textContent = drv.note || '';
+    document.getElementById('dlState').textContent = d.download_ar || '';
+    document.getElementById('dlState').className = 'big ' + (d.download_paused ? 'run' : 'ok');
+    document.getElementById('dlNote').textContent = d.download_note || '';
+    document.getElementById('dlFill').style.width = (d.download_pct || 0) + '%';
+    document.getElementById('dlCount').textContent = (d.done_brands || 0) + ' من ' + (d.total_brands || 0);
+    document.getElementById('brands').innerHTML = (d.brands || []).map(brandHtml).join('');
+    document.getElementById('tick').textContent = 'آخر تحديث ' + (d.now || '') + ' · يتحدث كل 3 ثوانٍ';
+  } catch (e) {
+    document.getElementById('driveState').textContent = 'تعذر تحديث الصفحة';
   }
 }
 tick();
@@ -528,21 +651,21 @@ def drive_payload() -> dict:
     pct = round(100.0 * total_up / total_need)
     if parsed["pdf_done"] and parsed["hw_done"]:
         state = "done"
-        note = "افتح تطبيق Drive → مجلد Phone X"
+        note = "افتح تطبيق جوجل درايف → مجلد Phone X"
     elif running and parsed["has_pdf_phase"]:
         state = "pdf"
-        note = "الصور اكتملت تقريباً — بدأ رفع PDF"
+        note = "الصور اكتملت تقريباً — بدأ رفع ملفات PDF"
     elif running:
         state = "hardware"
-        note = "الرفع إلى حسابك مباشرة داخل Phone X"
+        note = "الرفع إلى حسابك مباشرة داخل مجلد Phone X"
     elif parsed["copied"] and not running:
         state = "stopped"
-        note = "توقف rclone — سيتم استئنافه إن لم يكتمل"
+        note = "توقف الرفع — سيتم استئنافه إن لم يكتمل"
     else:
         state = "hardware"
         note = "جاري تجهيز الرفع"
     if parsed["errors"]:
-        note += f" · أخطاء: {parsed['errors']}"
+        note += f" · عدد الأخطاء: {parsed['errors']}"
     return {
         "state": state,
         "pct": pct,
@@ -558,6 +681,33 @@ def drive_payload() -> dict:
         "note": note,
         "now": time.strftime("%H:%M:%S UTC", time.gmtime()),
     }
+
+
+BRAND_AR = {
+    "SAMSUNG": "سامسونج",
+    "INFINIX": "إنفينكس",
+    "VIVO": "فيفو",
+    "ASUS": "أسوس",
+    "GOOGLE PIXEL": "جوجل بكسل",
+    "IPHONE": "آيفون + آيباد",
+    "HUAWEI": "هواوي",
+    "ITEL": "آيتل",
+    "JIO": "جيو",
+    "LAVA": "لافا",
+    "LENOVO": "لينوفو",
+    "MICROMAX": "مايكرومكس",
+    "MOTOROLA": "موتورولا",
+    "NOKIA": "نوكيا",
+    "NOTING PHONE": "نوثينج فون",
+    "ONEPLUS": "ون بلس",
+    "OPPO": "أوبو",
+    "REALME": "ريلمي",
+    "SONY": "سوني",
+    "TECNO": "تكنو",
+    "XIAOMI": "شاومي",
+    "ZTE": "زد تي إي",
+}
+DONE_BRANDS = {"SAMSUNG", "INFINIX", "VIVO", "ASUS", "GOOGLE PIXEL", "IPHONE"}
 
 
 def _catalog_models() -> dict[str, int]:
@@ -607,6 +757,57 @@ def progress_payload(n_log: int = 50) -> dict:
         "status": status.strip(),
         "log": lines,
         "brands": brands,
+    }
+
+
+def monitor_payload() -> dict:
+    drive = drive_payload()
+    prog = progress_payload(20)
+    by = {b["brand"]: b for b in prog["brands"]}
+    cat = _catalog_models()
+    brands = []
+    for brand, ncat in sorted(cat.items(), key=lambda kv: BRAND_AR.get(kv[0], kv[0])):
+        b = by.get(brand) or {"hardware": 0, "models": 0, "pdf": 0}
+        models = int(b.get("models") or 0)
+        hardware = int(b.get("hardware") or 0)
+        pdf = int(b.get("pdf") or 0)
+        pct = round(100.0 * models / ncat) if ncat else 0
+        if brand in DONE_BRANDS or (ncat and models >= ncat):
+            state, state_ar, pct = "done", "مكتمل", 100 if models else pct
+        elif hardware > 0:
+            state, state_ar = "paused", "متوقف"
+        else:
+            state, state_ar, pct = "waiting", "لم يبدأ", 0
+        brands.append(
+            {
+                "brand": brand,
+                "ar": BRAND_AR.get(brand, brand),
+                "models": models,
+                "catalog": ncat,
+                "hardware": hardware,
+                "pdf": pdf,
+                "state": state,
+                "state_ar": state_ar,
+                "pct": pct,
+            }
+        )
+    order = {"paused": 0, "done": 1, "waiting": 2}
+    brands.sort(key=lambda x: (order.get(x["state"], 9), x["ar"]))
+    total_n = len(brands) or 1
+    paused = True
+    return {
+        "now": time.strftime("%H:%M:%S UTC", time.gmtime()),
+        "drive": drive,
+        "brands": brands,
+        "done_brands": done_n,
+        "total_brands": total_n,
+        "download_pct": round(100.0 * done_n / total_n),
+        "download_paused": paused,
+        "download_ar": "التحميل متوقف الآن" if paused else "التحميل يعمل الآن",
+        "download_note": (
+            f"اكتملت {done_n} شركات من أصل {total_n}. "
+            "هواوي بدأت ثم توقفت بطلبك. الباقي لم يبدأ."
+        ),
     }
 
 
@@ -720,7 +921,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         prefix = self._prefix()
-        if path in ("/", prefix, prefix + "/"):
+        if path in ("/", prefix, prefix + "/", prefix + "/monitor", prefix + "/monitor/"):
+            return self._ok(MONITOR_HTML.encode())
+        if path in (prefix + "/search", prefix + "/search/"):
             return self._ok(HTML.encode())
         if path in (prefix + "/progress", prefix + "/progress/"):
             return self._ok(PROGRESS_HTML.encode())
@@ -738,6 +941,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if rest.startswith("/api/drive"):
             payload = json.dumps(drive_payload(), ensure_ascii=False).encode()
+            return self._ok(payload, "application/json; charset=utf-8")
+
+        if rest.startswith("/api/monitor"):
+            payload = json.dumps(monitor_payload(), ensure_ascii=False).encode()
             return self._ok(payload, "application/json; charset=utf-8")
 
         if rest.startswith("/ready/"):
