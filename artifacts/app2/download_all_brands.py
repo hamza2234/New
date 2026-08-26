@@ -292,8 +292,8 @@ def list_items(brand: str | None = None, node: str | None = None) -> list[dict]:
         url = HW + "?action=list&brand=" + urllib.parse.quote(brand)
     else:
         url = HW + "?action=list&node=" + urllib.parse.quote(node or "")
-    # WARP LIST often needs >25s; a short timeout restarts the whole brand walk.
-    data = json.loads(http_get(url, timeout=90 if PROXY_POOL else 25))
+    # Fast fail-over to the other SOCKS hop; 90s LIST hangs look "stuck".
+    data = json.loads(http_get(url, timeout=40 if PROXY_POOL else 25))
     if isinstance(data, dict) and data.get("error"):
         raise RuntimeError(str(data["error"]))
     return list(data.get("items") or [])
@@ -328,12 +328,69 @@ def walk_brand(brand: str) -> list[dict]:
     return jobs
 
 
+def disk_originals(folder: Path) -> list[Path]:
+    if not folder.exists():
+        return []
+    out = []
+    for p in folder.iterdir():
+        if not p.is_file() or p.name.endswith(".part"):
+            continue
+        if p.stat().st_size < MIN_REAL and p.suffix.lower() != ".pdf":
+            continue
+        if p.suffix.lower() == ".png":
+            head = p.read_bytes()[:24]
+            if png_size(head) == PLACEHOLDER_WH:
+                continue
+        out.append(p)
+    return out
+
+
+def models_with_missing_fails(brand: str) -> set[str]:
+    """Models that still lack a file logged as FAIL — must re-LIST those."""
+    logp = LIB / "download.log"
+    if not logp.exists():
+        return set()
+    need: set[str] = set()
+    for line in logp.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.search(rf"FAIL {re.escape(brand)} / (.+?) / (.+?) \(", line)
+        if not m:
+            continue
+        model, name = m.group(1).strip(), m.group(2).strip()
+        # locate model folder under this brand
+        hw = LIB / safe(brand) / "Hardware"
+        if not hw.exists():
+            need.add(model)
+            continue
+        found = False
+        for d in hw.rglob("*"):
+            if d.is_dir() and d.name == model:
+                if existing_file(d, name):
+                    found = True
+                    break
+                need.add(model)
+                found = True
+                break
+        if not found:
+            need.add(model)
+    return need
+
+
 def process_brand_incremental(brand: str) -> list[dict]:
     """List one folder, download its files immediately, then recurse."""
     all_jobs: list[dict] = []
+    relist = models_with_missing_fails(brand)
+    if relist:
+        log(f"{brand} will re-LIST {len(relist)} models with missing FAIL files")
 
     def rec(node: str | None, path: list[str]) -> None:
         label = " / ".join(path) or brand
+        if path:
+            folder = hw_dir(brand, path, path[-1])
+            have = disk_originals(folder)
+            model = path[-1]
+            if have and model not in relist:
+                log(f"SKIP LIST {brand} {label}: {len(have)} files already on disk")
+                return
         log(f"LIST {brand} {label}")
         items: list[dict] | None = None
         last_err: Exception | None = None
@@ -444,6 +501,7 @@ def download_jobs(jobs: list[dict], brand: str) -> None:
         else:
             pending.append(j)
     log(f"{brand} hardware catalog={len(jobs)} pending={len(pending)} skip={len(jobs)-len(pending)}")
+    write_status()
     if not pending:
         return
     # one model at a time so logs stay readable and URLs stay fresh
