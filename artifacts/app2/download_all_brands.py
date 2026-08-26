@@ -129,9 +129,42 @@ def is_original(data: bytes) -> bool:
 
 _proxy_seq = itertools.count()
 _proxy_lock = threading.Lock()
+_proxy_sems: dict[str, threading.Semaphore] | None = None
+PER_PROXY = int(os.environ.get("CB_PER_PROXY", "2") or "2")
 
 
-def curl_proxy_args() -> list[str]:
+def _proxy_slots() -> dict[str, threading.Semaphore]:
+    global _proxy_sems
+    if _proxy_sems is None:
+        n = max(1, PER_PROXY)
+        _proxy_sems = {p: threading.Semaphore(n) for p in PROXY_POOL}
+    return _proxy_sems
+
+
+def _acquire_proxy() -> str | None:
+    if not PROXY_POOL:
+        return None
+    slots = _proxy_slots()
+    with _proxy_lock:
+        start = next(_proxy_seq)
+    n = len(PROXY_POOL)
+    for off in range(n):
+        p = PROXY_POOL[(start + off) % n]
+        if slots[p].acquire(blocking=False):
+            return p
+    p = PROXY_POOL[start % n]
+    slots[p].acquire()
+    return p
+
+
+def _release_proxy(proxy: str | None) -> None:
+    if proxy:
+        _proxy_slots()[proxy].release()
+
+
+def curl_proxy_args(proxy: str | None = None) -> list[str]:
+    if proxy:
+        return ["--proxy", proxy]
     if not PROXY_POOL:
         return []
     with _proxy_lock:
@@ -206,24 +239,25 @@ def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
     last: Exception | None = None
     for attempt in range(RETRIES):
         hdr = headers()
+        proxy = _acquire_proxy()
         cmd = [
             "curl",
             "-sS",
             "--http1.1",
             "-L",
             "--connect-timeout",
-            "12" if CURL_PROXY else "8",
+            "8" if CURL_PROXY else "8",
             "--max-time",
-            str(max(15, timeout)),
+            str(max(12, timeout)),
             "-A",
             hdr["User-Agent"],
-            *curl_proxy_args(),
+            *curl_proxy_args(proxy),
             "-o",
             "-",
         ]
         if abort_stall:
             # Drop a dead WARP hop instead of sitting for minutes.
-            cmd.extend(["--speed-limit", "50000", "--speed-time", "12"])
+            cmd.extend(["--speed-limit", "50000", "--speed-time", "10"])
         for k, v in hdr.items():
             if k == "User-Agent":
                 continue
@@ -237,13 +271,15 @@ def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
             last = RuntimeError(f"curl {p.returncode} {err or 'empty body'}")
         except Exception as e:
             last = e
+        finally:
+            _release_proxy(proxy)
         # Direct IP: SSL timeout is the VM ban — abort this call.
         # SOCKS pool: same error is a flaky WARP hop — retry another proxy.
         if _is_tls_block(str(last)) and not PROXY_POOL:
             raise RuntimeError(str(last))
-        if attempt == 0 or attempt == RETRIES - 1:
+        if attempt == RETRIES - 1:
             log(f"HTTP retry {attempt+1}/{RETRIES}: {last} {url[:90]}")
-        time.sleep(0.4 * (attempt + 1) + random.random() * 0.3)
+        time.sleep(0.15 * (attempt + 1))
     raise RuntimeError(str(last))
 
 
@@ -541,7 +577,7 @@ def download_hw_one(job: dict, idx: int, total: int) -> None:
     for attempt in range(RETRIES):
         try:
             req = json.loads(
-                http_get(HW + "?action=request&node=" + urllib.parse.quote(node), timeout=60)
+                http_get(HW + "?action=request&node=" + urllib.parse.quote(node), timeout=18)
             )
             serve = req.get("node") or ""
             if not serve:
