@@ -10,6 +10,7 @@ import hashlib
 import itertools
 import json
 import os
+import queue
 import random
 import re
 import subprocess
@@ -37,6 +38,7 @@ MIN_REAL = 20_000
 WORKERS = int(os.environ.get("CB_WORKERS", "16") or "16")
 RETRIES = 3
 LIST_BATCH = int(os.environ.get("CB_LIST_BATCH", "8") or "8")
+PER_PROXY = int(os.environ.get("CB_PER_PROXY", "3") or "3")
 # Direct IP is banned; with SOCKS retry catalog quickly instead of parking 4h.
 CATALOG_RETRY_S = 14400
 TLS_PROBE_URL = "https://circuitbitapp.com/"
@@ -129,37 +131,47 @@ def is_original(data: bytes) -> bool:
 
 _proxy_seq = itertools.count()
 _proxy_lock = threading.Lock()
-_proxy_sems: dict[str, threading.Semaphore] | None = None
-PER_PROXY = int(os.environ.get("CB_PER_PROXY", "2") or "2")
+_session_q: queue.Queue | None = None
+_HAS_REQUESTS = False
+try:
+    import requests
+    from requests.adapters import HTTPAdapter
+
+    _HAS_REQUESTS = True
+except Exception:
+    requests = None  # type: ignore
+    HTTPAdapter = None  # type: ignore
 
 
-def _proxy_slots() -> dict[str, threading.Semaphore]:
-    global _proxy_sems
-    if _proxy_sems is None:
-        n = max(1, PER_PROXY)
-        _proxy_sems = {p: threading.Semaphore(n) for p in PROXY_POOL}
-    return _proxy_sems
-
-
-def _acquire_proxy() -> str | None:
-    if not PROXY_POOL:
-        return None
-    slots = _proxy_slots()
-    with _proxy_lock:
-        start = next(_proxy_seq)
-    n = len(PROXY_POOL)
-    for off in range(n):
-        p = PROXY_POOL[(start + off) % n]
-        if slots[p].acquire(blocking=False):
-            return p
-    p = PROXY_POOL[start % n]
-    slots[p].acquire()
-    return p
-
-
-def _release_proxy(proxy: str | None) -> None:
+def _new_session(proxy: str | None) -> object:
+    s = requests.Session()
+    s.headers.update({"User-Agent": UA})
     if proxy:
-        _proxy_slots()[proxy].release()
+        s.proxies = {"http": proxy, "https": proxy}
+    ad = HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0)
+    s.mount("https://", ad)
+    s.mount("http://", ad)
+    s._cb_proxy = proxy  # type: ignore[attr-defined]
+    return s
+
+
+def _session_pool() -> queue.Queue:
+    global _session_q
+    if _session_q is not None:
+        return _session_q
+    with _proxy_lock:
+        if _session_q is not None:
+            return _session_q
+        q: queue.Queue = queue.Queue()
+        n = max(1, PER_PROXY)
+        if PROXY_POOL:
+            for p in PROXY_POOL:
+                for _ in range(n):
+                    q.put(_new_session(p))
+        else:
+            q.put(_new_session(None))
+        _session_q = q
+        return q
 
 
 def curl_proxy_args(proxy: str | None = None) -> list[str]:
@@ -234,29 +246,87 @@ def wait_until_tls(brand: str) -> None:
             return
 
 
+def _read_stall(resp, min_bps: int = 50000, window: float = 10.0) -> bytes:
+    chunks: list[bytes] = []
+    n = 0
+    t0 = time.time()
+    last_n = 0
+    last_t = t0
+    for c in resp.iter_content(64 * 1024):
+        if not c:
+            continue
+        chunks.append(c)
+        n += len(c)
+        now = time.time()
+        if now - last_t >= window:
+            rate = (n - last_n) / max(0.001, now - last_t)
+            if rate < min_bps:
+                resp.close()
+                raise RuntimeError(f"stall {rate:.0f} B/s after {n} bytes")
+            last_n, last_t = n, now
+    return b"".join(chunks)
+
+
 def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
-    """curl only — Python SSL to this host often hangs for 25s+."""
+    """Keep-alive HTTPS via WARP SOCKS. New TLS per curl was the bottleneck."""
+    if not _HAS_REQUESTS or not PROXY_POOL:
+        return _http_get_curl(url, timeout=timeout, abort_stall=abort_stall)
+    last: Exception | None = None
+    q = _session_pool()
+    for attempt in range(RETRIES):
+        s = q.get()
+        try:
+            hdr = headers()
+            connect = 8
+            read = max(12, timeout)
+            r = s.get(
+                url,
+                headers=hdr,
+                timeout=(connect, read),
+                stream=abort_stall,
+            )
+            if r.status_code != 200:
+                raise RuntimeError(f"http {r.status_code} {url[:80]}")
+            body = _read_stall(r) if abort_stall else r.content
+            if not body:
+                raise RuntimeError("empty body")
+            return body
+        except Exception as e:
+            last = e
+            proxy = getattr(s, "_cb_proxy", None)
+            try:
+                s.close()
+            except Exception:
+                pass
+            s = _new_session(proxy)
+        finally:
+            q.put(s)
+        if attempt == RETRIES - 1:
+            log(f"HTTP retry {attempt+1}/{RETRIES}: {last} {url[:90]}")
+        time.sleep(0.1 * (attempt + 1))
+    raise RuntimeError(str(last))
+
+
+def _http_get_curl(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
     last: Exception | None = None
     for attempt in range(RETRIES):
         hdr = headers()
-        proxy = _acquire_proxy()
         cmd = [
             "curl",
             "-sS",
             "--http1.1",
             "-L",
             "--connect-timeout",
-            "8" if CURL_PROXY else "8",
+            "8",
             "--max-time",
             str(max(12, timeout)),
             "-A",
             hdr["User-Agent"],
-            *curl_proxy_args(proxy),
+            *curl_proxy_args(),
             "-o",
             "-",
         ]
         if abort_stall:
-            # Drop a dead WARP hop instead of sitting for minutes.
             cmd.extend(["--speed-limit", "50000", "--speed-time", "10"])
         for k, v in hdr.items():
             if k == "User-Agent":
@@ -271,10 +341,6 @@ def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
             last = RuntimeError(f"curl {p.returncode} {err or 'empty body'}")
         except Exception as e:
             last = e
-        finally:
-            _release_proxy(proxy)
-        # Direct IP: SSL timeout is the VM ban — abort this call.
-        # SOCKS pool: same error is a flaky WARP hop — retry another proxy.
         if _is_tls_block(str(last)) and not PROXY_POOL:
             raise RuntimeError(str(last))
         if attempt == RETRIES - 1:
@@ -789,6 +855,7 @@ def main() -> int:
     brands = only or brand_order()
     log(
         f"START brands={brands} workers={WORKERS} catalog_retry={CATALOG_RETRY_S}s "
+        f"keepalive={_HAS_REQUESTS and bool(PROXY_POOL)} per_proxy={PER_PROXY} "
         f"proxy={'on:'+','.join(PROXY_POOL) if PROXY_POOL else 'off'}"
     )
     write_status()
