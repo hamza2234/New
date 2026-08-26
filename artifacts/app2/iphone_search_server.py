@@ -21,7 +21,8 @@ READY = Path("/workspace/artifacts/export")
 SUPPORTED = Path("/workspace/artifacts/app2/supported_models.json")
 STATUS = LIB / "STATUS.txt"
 LOG = LIB / "download.log"
-DRIVE_LOG = Path("/tmp/gdrive-iphone-upload.log")
+DRIVE_LOG = Path("/tmp/gdrive-fit-upload.log")
+IPHONE_DRIVE_LOG = Path("/tmp/gdrive-iphone-upload.log")
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("IPHONE_SITE_PORT", "8765"))
 TOKEN = os.environ.get("IPHONE_SITE_TOKEN", "cbiphone")
@@ -394,8 +395,8 @@ DRIVE_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>رفع الآيفون إلى جوجل درايف</h1>
-  <div class="mut">المجلد: <b>Phone X</b> · آيفون + آيباد · التحديث كل 3 ثوانٍ</div>
+  <h1>رفع إلى جوجل درايف</h1>
+  <div class="mut">المجلد: <b>Phone X</b> · جوجل بكسل ثم أسوس · التحديث كل 3 ثوانٍ</div>
   <div class="mut" style="margin-top:8px"><a href="#" id="home">مراقبة التقدم</a> · <a href="#" id="search">البحث</a> · <a href="#" id="prog">سجل التحميل</a></div>
 </header>
 <div class="card">
@@ -420,7 +421,7 @@ document.getElementById('prog').href = base + '/progress';
 function arState(s){
   if (s === 'done') return ['اكتمل الرفع إلى درايف', 'ok'];
   if (s === 'pdf') return ['جارٍ رفع ملفات PDF', 'run'];
-  if (s === 'hardware') return ['جارٍ رفع صور الهاردوير', 'run'];
+  if (s === 'hardware') return ['جارٍ رفع الملفات إلى درايف', 'run'];
   if (s === 'stopped') return ['توقف الرفع — سأعيد المحاولة', 'bad'];
   return ['جارٍ الرفع إلى جوجل درايف', 'run'];
 }
@@ -495,7 +496,7 @@ MONITOR_HTML = r"""<!DOCTYPE html>
   </div>
 </header>
 <div class="card">
-  <h2>رفع الآيفون إلى جوجل درايف</h2>
+  <h2>رفع إلى جوجل درايف</h2>
   <div id="driveState" class="big run">جاري القراءة...</div>
   <div class="pct" id="drivePct">—</div>
   <div class="bar"><span id="driveFill"></span></div>
@@ -520,9 +521,9 @@ document.getElementById('search').href = base + '/search';
 document.getElementById('prog').href = base + '/progress';
 document.getElementById('ready').href = base + '/ready';
 function driveTxt(s){
-  if (s === 'done') return ['اكتمل رفع الآيفون إلى درايف', 'ok'];
+  if (s === 'done') return ['اكتمل الرفع إلى درايف', 'ok'];
   if (s === 'pdf') return ['جارٍ رفع ملفات PDF', 'run'];
-  if (s === 'hardware') return ['جارٍ رفع صور الهاردوير', 'run'];
+  if (s === 'hardware') return ['جارٍ رفع الملفات إلى درايف', 'run'];
   if (s === 'stopped') return ['توقف الرفع', 'bad'];
   return ['جارٍ الرفع', 'run'];
 }
@@ -583,11 +584,22 @@ def _rclone_running() -> bool:
 
 
 def _count_disk() -> tuple[int, int]:
-    hw = IPHONE / "Hardware"
-    pdf = IPHONE / "PDF"
-    n_hw = sum(1 for p in hw.rglob("*") if p.is_file() and p.suffix.lower() in {".png", ".jpg"}) if hw.exists() else 0
-    n_pdf = sum(1 for p in pdf.rglob("*.pdf") if p.is_file()) if pdf.exists() else 0
-    return n_hw, n_pdf
+    """Current Drive job: Pixel + ASUS hardware (no PDF on server)."""
+    n_hw = 0
+    for brand in ("GOOGLE PIXEL", "ASUS"):
+        hw = LIB / brand / "Hardware"
+        if hw.is_symlink():
+            try:
+                hw = hw.resolve()
+            except OSError:
+                continue
+        if hw.exists():
+            n_hw += sum(
+                1
+                for p in hw.rglob("*")
+                if p.is_file() and p.suffix.lower() in {".png", ".jpg"}
+            )
+    return n_hw, 0
 
 
 def _parse_drive_log() -> dict:
@@ -604,6 +616,10 @@ def _parse_drive_log() -> dict:
                 recent.append(name)
         if " ERROR " in line or "Failed to copy" in line:
             errors += 1
+        if "PIXEL_EXIT=" in line:
+            hw_done = line.split("PIXEL_EXIT=", 1)[-1].split()[0] == "0" or hw_done
+        if "ASUS_EXIT=" in line:
+            pdf_done = line.split("ASUS_EXIT=", 1)[-1].split()[0] == "0" or pdf_done
         if "HARDWARE_EXIT=" in line:
             hw_done = line.split("HARDWARE_EXIT=", 1)[-1].split()[0] == "0"
         if "PDF_EXIT=" in line:
@@ -614,7 +630,12 @@ def _parse_drive_log() -> dict:
         "recent": recent[-8:][::-1],
         "hw_done": hw_done,
         "pdf_done": pdf_done,
-        "has_pdf_phase": "gdrive_user:PDF" in text or "PDF_EXIT=" in text,
+        "has_pdf_phase": (
+            "gdrive_user:ASUS" in text
+            or "ASUS_EXIT=" in text
+            or "gdrive_user:PDF" in text
+            or "PDF_EXIT=" in text
+        ),
     }
 
 
@@ -639,9 +660,16 @@ def drive_payload() -> dict:
                 d = json.loads(p.stdout)
                 return int(d.get("count") or 0), int(d.get("bytes") or 0)
 
-            hw_n, hw_b = _sz("Hardware")
-            pdf_n, pdf_b = _sz("PDF")
-            _drive_size_cache.update(t=now, hw=hw_n, pdf=pdf_n, bytes=hw_b + pdf_b)
+            hw_n, hw_b = _sz("GOOGLE PIXEL/Hardware")
+            as_n, as_b = _sz("ASUS/Hardware")
+            ip_n, ip_b = _sz("Hardware")
+            ipp_n, ipp_b = _sz("PDF")
+            _drive_size_cache.update(
+                t=now,
+                hw=hw_n + as_n,
+                pdf=0,
+                bytes=hw_b + as_b + ip_b + ipp_b,
+            )
         except Exception:
             pass
     hw_up = int(_drive_size_cache.get("hw") or 0)
@@ -651,19 +679,19 @@ def drive_payload() -> dict:
     pct = round(100.0 * total_up / total_need)
     if parsed["pdf_done"] and parsed["hw_done"]:
         state = "done"
-        note = "افتح تطبيق جوجل درايف → مجلد Phone X"
+        note = "افتح درايف → Phone X · مجلدات GOOGLE PIXEL و ASUS (الآيفون موجود مسبقاً)"
     elif running and parsed["has_pdf_phase"]:
         state = "pdf"
-        note = "الصور اكتملت تقريباً — بدأ رفع ملفات PDF"
+        note = "جوجل بكسل اكتمل تقريباً — بدأ رفع أسوس"
     elif running:
         state = "hardware"
-        note = "الرفع إلى حسابك مباشرة داخل مجلد Phone X"
+        note = "رفع جوجل بكسل ثم أسوس إلى Phone X"
     elif parsed["copied"] and not running:
         state = "stopped"
         note = "توقف الرفع — سيتم استئنافه إن لم يكتمل"
     else:
         state = "hardware"
-        note = "جاري تجهيز الرفع"
+        note = "جاري تجهيز رفع جوجل بكسل وأسوس"
     if parsed["errors"]:
         note += f" · عدد الأخطاء: {parsed['errors']}"
     return {
