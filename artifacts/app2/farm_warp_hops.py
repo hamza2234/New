@@ -292,11 +292,17 @@ def main() -> int:
 
     while True:
         running = running_wireproxy()
+        dropped = False
         for n in list(live):
             pid = live[n]
             if running.get(n) != pid or not pid_alive(pid):
                 log(f"dead process w{n} pid={pid}")
                 live.pop(n, None)
+                dropped = True
+        if dropped:
+            urls = [proxy_url(port_for(n)) for n in sorted(live)]
+            write_live(urls)
+            log(f"live={len(live)} {urls}")
 
         now = time.time()
         # CircuitBit-test live hops at most every 45s — probing them every loop burns exits.
@@ -311,8 +317,14 @@ def main() -> int:
                 else:
                     log(f"TLS dead w{n} :{port_for(n)} pid={pid} — kill")
                     kill_pid(pid)
+                    live.pop(n, None)
                     failed_until[n] = time.time() + 3600
                     save_failed(failed_until)
+                    # Drop the dead hop from the live file immediately so
+                    # downloaders wait instead of retrying a killed SOCKS port.
+                    urls = [proxy_url(port_for(k)) for k in sorted(live)]
+                    write_live(urls)
+                    log(f"live={len(live)} {urls}")
             live = still
             last_tls_check = time.time()
             urls = [proxy_url(port_for(n)) for n in sorted(live)]
