@@ -13,7 +13,7 @@ import zipfile
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 LIB = Path("/workspace/artifacts/app2/library")
 IPHONE = Path("/workspace/artifacts/app2/iphone_originals")
@@ -133,6 +133,15 @@ def models_payload(brand: str = "", q: str = "") -> dict:
             }
         )
     return {"count": len(models), "models": models[:800]}
+
+
+def disposition_header(filename: str, inline: bool = True) -> str:
+    """HTTP headers must be latin-1; put Arabic names in filename* only."""
+    disp = "inline" if inline else "attachment"
+    ascii_name = "".join(
+        c if 32 <= ord(c) < 127 and c not in '";\\' else "_" for c in filename
+    ) or "file"
+    return f"{disp}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
 
 
 def safe_under(base: Path, rel: str) -> Path | None:
@@ -1282,9 +1291,23 @@ class Handler(BaseHTTPRequestHandler):
             if not target:
                 return self._err(404, "file not found")
             ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-            data = target.read_bytes()
-            disp = "inline"
-            return self._ok(data, ctype, {"Content-Disposition": f'{disp}; filename="{target.name}"'})
+            try:
+                size = target.stat().st_size
+            except OSError:
+                return self._err(404, "file not found")
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Disposition", disposition_header(target.name, inline=True))
+            self.end_headers()
+            with target.open("rb") as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            return
 
         return self._err(404, "not found")
 
