@@ -990,14 +990,18 @@ def monitor_payload() -> dict:
         "recent": [],
     }
     cat = _catalog_models()
-    running_brand = None
+    parallel_on = _proc_running(
+        ("wanted_parallel_fill.py", "wanted_parallel.py")
+    )
+    running_brands = set()
+    if parallel_on:
+        running_brands = {"REALME", "XIAOMI", "ITEL", "OPPO", "TECNO"}
     for b in WANTED_BRANDS:
         needles = (f"brand_fill.py {b}",)
         if b == "HUAWEI":
             needles = ("python3 -u /tmp/huawei_fill.py",)
         if _proc_running(needles):
-            running_brand = b
-            break
+            running_brands.add(b)
     brands = []
     for brand in WANTED_BRANDS:
         ncat = int(cat.get(brand) or 0)
@@ -1017,7 +1021,7 @@ def monitor_payload() -> dict:
             hardware = hw["png"]
             pdf = hw["pdf"]
             ncat = hw["catalog_models"]
-        elif brand == running_brand:
+        elif brand in running_brands:
             state, state_ar = "run", "التحميل يعمل الآن"
             st_path = Path(f"/tmp/{brand.lower()}_fill_state.json")
             try:
@@ -1054,7 +1058,11 @@ def monitor_payload() -> dict:
     note = (
         "المطلوب فقط: هواوي، إنفينكس، ريلمي، شاومي، آيتل، أوبو، تكنو. "
         "لن نحمّل سامسونج أو فيفو أو أسوس أو باقي الشركات. "
-        + (f"الجاري الآن: {BRAND_AR.get(running_brand, running_brand)}. " if running_brand else "")
+        + (
+            "الجاري الآن معاً: ريلمي وشاومي وآيتل وأوبو وتكنو. "
+            if running_brands
+            else ""
+        )
     )
     return {
         "now": time.strftime("%H:%M:%S UTC", time.gmtime()),
@@ -1064,7 +1072,7 @@ def monitor_payload() -> dict:
         "done_brands": done_n,
         "total_brands": total_n,
         "download_pct": dl_pct,
-        "download_paused": running_brand is None,
+        "download_paused": not running_brands,
         "download_ar": hw.get("state_ar") or "",
         "download_note": note,
     }
