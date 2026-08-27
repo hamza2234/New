@@ -196,6 +196,30 @@ def rename_tree(root: Path, kind: str) -> tuple[int, int, list[str]]:
     return n_ok, n_skip, missing
 
 
+def files_missing_arabic(root: Path) -> list[Path]:
+    """Files whose English stem has no Arabic (… ) suffix."""
+    missing: list[Path] = []
+    if not root.exists():
+        return missing
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or p.name.endswith(".part"):
+            continue
+        if not already_bilingual(p.stem):
+            missing.append(p)
+    return missing
+
+
+def assert_arabic_parens(root: Path) -> None:
+    """Refuse Drive upload if any file still lacks English (عربي)."""
+    missing = files_missing_arabic(root)
+    if not missing:
+        return
+    sample = "\n".join(f"  {p}" for p in missing[:20])
+    raise SystemExit(
+        f"REFUSE upload: {len(missing)} file(s) under {root} lack Arabic (… )\n{sample}"
+    )
+
+
 def main() -> int:
     roots = [Path(a) for a in sys.argv[1:]] or [IPHONE]
     total_r = total_s = 0

@@ -461,6 +461,8 @@ def save_body(folder: Path, name: str, body: bytes) -> Path:
         stem = pdf_bilingual_stem(stem) if ext == ".pdf" else hw_bilingual_stem(stem)
     except Exception:
         pass
+    if "(" not in stem or not any("\u0600" <= ch <= "\u06ff" for ch in stem):
+        stem = f"{stem} (مخطط عطل)" if ext != ".pdf" else f"{stem} (ملف مخطط)"
     dest = folder / f"{stem}{ext}"
     tmp = dest.with_suffix(dest.suffix + ".part")
     tmp.write_bytes(body)
