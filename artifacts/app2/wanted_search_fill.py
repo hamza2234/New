@@ -51,6 +51,19 @@ def catalog_models() -> dict[str, list[str]]:
         b = str(row.get("brand") or "").upper()
         if b in out:
             out[b].append(str(row.get("model") or "").strip())
+    # Black Shark serve_image URLs 404; pull common Xiaomi lines first.
+    out["XIAOMI"].sort(
+        key=lambda m: (
+            0
+            if m.upper().startswith("REDMI")
+            else 1
+            if m.upper().startswith("POCO")
+            else 2
+            if m.upper().startswith("MI ")
+            else 3,
+            m.upper(),
+        )
+    )
     return out
 
 
