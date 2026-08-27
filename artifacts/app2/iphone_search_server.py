@@ -991,7 +991,11 @@ def monitor_payload() -> dict:
     }
     cat = _catalog_models()
     parallel_on = _proc_running(
-        ("wanted_parallel_fill.py", "wanted_parallel.py")
+        (
+            "wanted_parallel_fill.py",
+            "wanted_parallel.py",
+            "wanted_search_fill.py",
+        )
     )
     running_brands = set()
     if parallel_on:
