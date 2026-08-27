@@ -108,10 +108,11 @@ def download_file(brand: str, model: str, name: str, url: str) -> str:
         return f"fail {last[:80]}"
 
 
-def _run_files(brand: str, model: str, pending: list[dict]) -> tuple[int, int, int, list[dict]]:
+def _run_files(brand: str, model: str, pending: list[dict]) -> tuple[int, int, int, list[dict], str]:
     ok = skip = fail = 0
     expired: list[dict] = []
-    inner = min(4, max(1, len(pending)))
+    first = ""
+    inner = min(3, max(1, len(pending)))
     with ThreadPoolExecutor(max_workers=inner) as ex:
         futs = {
             ex.submit(download_file, brand, model, s["name"], s["url"]): s for s in pending
@@ -124,9 +125,13 @@ def _run_files(brand: str, model: str, pending: list[dict]) -> tuple[int, int, i
                 skip += 1
             elif res.startswith("expired"):
                 expired.append(s)
+                if not first:
+                    first = res
             else:
                 fail += 1
-    return ok, skip, fail, expired
+                if not first:
+                    first = res
+    return ok, skip, fail, expired, first
 
 
 def process_model(brand: str, model: str, idx: int, total: int) -> tuple[int, int]:
@@ -141,12 +146,15 @@ def process_model(brand: str, model: str, idx: int, total: int) -> tuple[int, in
         dl.log(f"[{idx}/{total}] {brand}/{model} skip {len(sols)}")
         return 0, len(sols)
     ok = skip = fail = 0
+    first = ""
     # Fresh URLs die in ~60s — pull immediately, re-search leftovers twice.
     for wave in range(3):
-        n_ok, n_skip, n_fail, expired = _run_files(brand, model, pending)
+        n_ok, n_skip, n_fail, expired, err = _run_files(brand, model, pending)
         ok += n_ok
         skip += n_skip
         fail += n_fail
+        if err and not first:
+            first = err
         if not expired:
             break
         sols2 = search_model(brand, model)
@@ -158,8 +166,9 @@ def process_model(brand: str, model: str, idx: int, total: int) -> tuple[int, in
         if wave == 2:
             fail += len(pending)
             pending = []
+    extra = f" err={first[:80]}" if first and ok == 0 else ""
     dl.log(
-        f"[{idx}/{total}] {brand}/{model} files={len(sols)} new={ok} skip={skip} fail={fail}"
+        f"[{idx}/{total}] {brand}/{model} files={len(sols)} new={ok} skip={skip} fail={fail}{extra}"
     )
     return ok, len(sols)
 
@@ -194,26 +203,34 @@ def main() -> int:
         for q in queues:
             if q:
                 jobs.append(q.pop(0))
-    # Huawei-style: many models at once. Inner pool is 4 files/model.
-    workers = min(36, max(12, nproxy * 3), len(jobs))
+    # Equal share per brand so Xiaomi/Oppo/Tecno are not starved by Realme skips.
+    per = max(2, min(6, max(2, nproxy // len(BRANDS))))
     dl.log(
         f"LIGHTNING fill brands={BRANDS} models={len(jobs)} hops={nproxy} "
-        f"model_workers={workers}"
+        f"per_brand={per}"
     )
     write_state(
         {
             "phase": "download",
             "models": {b: len(cats[b]) for b in BRANDS},
             "hops": nproxy,
-            "workers": workers,
+            "per_brand": per,
         }
     )
     threading.Thread(target=_rate_loop, name="rate", daemon=True).start()
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = [
-            ex.submit(process_model, b, m, i, len(jobs))
-            for i, (b, m) in enumerate(jobs, 1)
-        ]
+
+    def run_brand(brand: str, models: list[str]) -> None:
+        n = max(2, min(6, max(2, len(dl.current_proxies()) // len(BRANDS))))
+        with ThreadPoolExecutor(max_workers=n) as ex:
+            futs = [
+                ex.submit(process_model, brand, m, i, len(models))
+                for i, m in enumerate(models, 1)
+            ]
+            for fut in as_completed(futs):
+                fut.result()
+
+    with ThreadPoolExecutor(max_workers=len(BRANDS)) as ex:
+        futs = [ex.submit(run_brand, b, cats[b]) for b in BRANDS]
         for fut in as_completed(futs):
             fut.result()
     _stop.set()
