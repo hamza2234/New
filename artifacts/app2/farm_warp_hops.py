@@ -100,9 +100,26 @@ def save_state(st: dict) -> None:
     tmp.replace(STATE)
 
 
+EXTRA = EGRESS / "extra_proxies.txt"
+
+
+def extra_urls() -> list[str]:
+    if not EXTRA.exists():
+        return []
+    try:
+        return [
+            ln.strip()
+            for ln in EXTRA.read_text().splitlines()
+            if ln.strip() and not ln.startswith("#")
+        ]
+    except OSError:
+        return []
+
+
 def write_live(urls: list[str]) -> None:
+    merged = list(dict.fromkeys([*urls, *extra_urls()]))
     tmp = LIVE.with_suffix(".tmp")
-    tmp.write_text("\n".join(urls) + ("\n" if urls else ""))
+    tmp.write_text("\n".join(merged) + ("\n" if merged else ""))
     tmp.replace(LIVE)
 
 
