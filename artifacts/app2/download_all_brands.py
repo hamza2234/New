@@ -185,7 +185,6 @@ def _hop_dead_err(err: str) -> bool:
             "timed out",
             "read timed out",
             "max retries exceeded",
-            "http 403",
             "http 429",
             "http 502",
             "http 503",
@@ -362,6 +361,11 @@ def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
                 timeout=(connect, read),
                 stream=abort_stall,
             )
+            if r.status_code in (403, 404):
+                # Signed serve_image URLs expire ~60s. Hop is still live — do not retry
+                # the same URL 8 times or the link is dead before the caller can refresh.
+                q.put(s)
+                raise RuntimeError(f"http {r.status_code} {url[:80]}")
             if r.status_code != 200:
                 raise RuntimeError(f"http {r.status_code} {url[:80]}")
             body = _read_stall(r) if abort_stall else r.content
@@ -372,22 +376,74 @@ def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
             return body
         except Exception as e:
             last = e
+            msg = str(e)
+            if "http 403" in msg or "http 404" in msg:
+                raise
             proxy = getattr(s, "_cb_proxy", None)
             try:
                 s.close()
             except Exception:
                 pass
-            if "empty body" in str(e).lower():
+            if "empty body" in msg.lower():
                 q.put(_new_session(proxy))
                 raise RuntimeError("empty body") from e
             # Dead hop: pick a *different* live proxy on the next try.
             alt = [p for p in current_proxies() if p != proxy]
             q.put(_new_session(alt[attempt % len(alt)] if alt else proxy))
-            if _hop_dead_err(str(e)):
+            if _hop_dead_err(msg):
                 log(f"HOP dead {proxy} — rotate ({e.__class__.__name__})")
         if attempt == RETRIES - 1:
             log(f"HTTP retry {attempt+1}/{RETRIES}: {last} {url[:90]}")
         time.sleep(0.1 * (attempt + 1))
+    raise RuntimeError(str(last))
+
+
+def http_get_fast(url: str, timeout: int = 40) -> bytes:
+    """Download one signed URL quickly. 403 raises immediately so the caller can re-search."""
+    current_proxies()
+    if not PROXY_POOL:
+        wait_until_tls("http_get_fast")
+        current_proxies()
+    last: Exception | None = None
+    for attempt in range(3):
+        current_proxies()
+        q = _session_pool()
+        s = q.get()
+        try:
+            r = s.get(
+                url,
+                headers=headers(),
+                timeout=(4, max(12, timeout)),
+                stream=True,
+            )
+            if r.status_code in (403, 404):
+                q.put(s)
+                raise RuntimeError(f"http {r.status_code} {url[:80]}")
+            if r.status_code != 200:
+                raise RuntimeError(f"http {r.status_code} {url[:80]}")
+            body = _read_stall(r, min_bps=20_000, window=8.0)
+            if not body:
+                raise RuntimeError("empty body")
+            q.put(s)
+            return body
+        except Exception as e:
+            last = e
+            msg = str(e)
+            if "http 403" in msg or "http 404" in msg:
+                raise
+            proxy = getattr(s, "_cb_proxy", None)
+            try:
+                s.close()
+            except Exception:
+                pass
+            if "empty body" in msg.lower():
+                q.put(_new_session(proxy))
+                raise RuntimeError("empty body") from e
+            alt = [p for p in current_proxies() if p != proxy]
+            q.put(_new_session(alt[attempt % len(alt)] if alt else proxy))
+            if _hop_dead_err(msg):
+                log(f"HOP dead {proxy} — rotate ({e.__class__.__name__})")
+            time.sleep(0.05 * (attempt + 1))
     raise RuntimeError(str(last))
 
 
