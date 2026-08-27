@@ -489,7 +489,7 @@ MONITOR_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>تحميل هواوي الآن</h1>
+  <h1>مراقبة التحميل</h1>
   <div class="mut" id="tick">يتحدث كل ثانيتين</div>
   <div class="nav">
     <a href="#" id="drive">رفع درايف</a>
@@ -596,7 +596,7 @@ async function tick(){
     document.getElementById('driveNote').textContent = drv.note || '';
     document.getElementById('dlState').textContent = (d.done_brands || 0) + ' شركات مكتملة';
     document.getElementById('dlState').className = 'big ok';
-    document.getElementById('dlNote').textContent = 'هواوي هي الجاري تحميلها الآن. سامسونج وإنفينكس وفيفو لن تُرفع إلا بطلبك.';
+    document.getElementById('dlNote').textContent = d.download_note || '';
     document.getElementById('dlFill').style.width = (d.download_pct || 0) + '%';
     document.getElementById('dlCount').textContent = (d.done_brands || 0) + ' من ' + (d.total_brands || 0);
     document.getElementById('brands').innerHTML = (d.brands || []).map(brandHtml).join('');
@@ -775,9 +775,11 @@ BRAND_AR = {
     "XIAOMI": "شاومي",
     "ZTE": "زد تي إي",
 }
-DONE_BRANDS = {"SAMSUNG", "INFINIX", "VIVO", "ASUS", "GOOGLE PIXEL", "IPHONE"}
+WANTED_BRANDS = ["HUAWEI", "INFINIX", "REALME", "XIAOMI", "ITEL", "OPPO", "TECNO"]
+DONE_BRANDS = {"INFINIX", "HUAWEI"}
 HUAWEI_SERVER_HW = 2635
 HUAWEI_SERVER_MODELS = 140
+HUAWEI_EMPTY_LEFT = 13
 
 _hw_live_cache: dict = {"t": 0.0}
 
@@ -853,6 +855,7 @@ def huawei_payload() -> dict:
     fill_on = _proc_running(("python3 -u /tmp/huawei_fill.py",))
     farm_on = _proc_running(("farm_warp_hops.py",))
     log_lines = [ln for ln in _tail_lines(HUAWEI_LOG, 12) if ln.strip()]
+    log_done = any("HUAWEI fill done" in ln for ln in _tail_lines(HUAWEI_LOG, 40))
     recent = []
     for ln in reversed(log_lines):
         if "ORIGINAL" in ln and " -> " in ln:
@@ -860,6 +863,7 @@ def huawei_payload() -> dict:
         if len(recent) >= 6:
             break
     waiting = any("waiting for live WARP hop" in ln for ln in log_lines[-8:])
+    empty_left = (not fill_on) and log_done and left <= HUAWEI_EMPTY_LEFT and len(pdfs) > 0
     if fill_on and png_n >= server and left == 0:
         state, state_ar = "pdf", "جارٍ تحميل PDF"
     elif fill_on and waiting and not hops:
@@ -868,17 +872,27 @@ def huawei_payload() -> dict:
         state, state_ar = "run", "التحميل يعمل الآن"
     elif fill_on:
         state, state_ar = "run", "التحميل يعمل الآن"
-    elif png_n >= server:
+    elif empty_left or png_n >= server:
         state, state_ar = "done", "اكتمل التحميل من السيرفر"
+        pct = 100
+        left = 0
     else:
         state, state_ar = "paused", "التحميل متوقف"
-    note = (
-        f"من السيرفر {server} صورة / {HUAWEI_SERVER_MODELS} موديل. "
-        f"متبقي {left} صورة. "
-        + ("المزرعة شغالة. " if farm_on else "المزرعة متوقفة. ")
-        + ("الهوبات: " + str(len(hops)) + ". " )
-        + "الأسماء بالإنجليزي مع عربي بين قوسين."
-    )
+    if state == "done":
+        note = (
+            f"اكتمل هواوي: {png_n} صورة / {len(models)} موديل / {len(pdfs)} PDF. "
+            f"{server - png_n} ملف من السيرفر بلا محتوى. "
+            "الأسماء بالإنجليزي مع عربي بين قوسين. "
+            "الحجم أكبر من درايف فلم يُرفع."
+        )
+    else:
+        note = (
+            f"من السيرفر {server} صورة / {HUAWEI_SERVER_MODELS} موديل. "
+            f"متبقي {left} صورة. "
+            + ("المزرعة شغالة. " if farm_on else "المزرعة متوقفة. ")
+            + ("الهوبات: " + str(len(hops)) + ". ")
+            + "الأسماء بالإنجليزي مع عربي بين قوسين."
+        )
     payload = {
         "brand": "HUAWEI",
         "ar": "هواوي",
@@ -964,7 +978,6 @@ def progress_payload(n_log: int = 50) -> dict:
 
 def monitor_payload() -> dict:
     hw = huawei_payload()
-    # Do not call Drive/rclone here — it blocked the progress page for the user.
     drive = {
         "state": "done",
         "pct": 100,
@@ -973,36 +986,50 @@ def monitor_payload() -> dict:
         "pdf_up": 0,
         "pdf_need": 0,
         "gb": 0,
-        "note": "الآيفون وبكسل وأسوس على درايف. هواوي تُرفع بعد اكتمال التحميل.",
+        "note": "الآيفون وبكسل على درايف. هواوي وإنفينكس أكبر من المساحة الحرة فلم يُرفعا.",
         "recent": [],
     }
     cat = _catalog_models()
-    by: dict[str, dict] = {}
-    with INDEX_LOCK:
-        for row in INDEX:
-            g = by.get(row["brand"])
-            if g is None:
-                g = {"hardware": 0, "pdf": 0, "models": set()}
-                by[row["brand"]] = g
-            if row["kind"] in ("hardware", "pdf"):
-                g[row["kind"]] += 1
-            g["models"].add(row["model"])
+    running_brand = None
+    for b in WANTED_BRANDS:
+        needles = (f"brand_fill.py {b}",)
+        if b == "HUAWEI":
+            needles = ("python3 -u /tmp/huawei_fill.py",)
+        if _proc_running(needles):
+            running_brand = b
+            break
     brands = []
-    for brand, ncat in sorted(cat.items(), key=lambda kv: BRAND_AR.get(kv[0], kv[0])):
-        b = by.get(brand) or {"hardware": 0, "models": set(), "pdf": 0}
-        ms = b.get("models") or set()
-        models = len(ms) if not isinstance(ms, int) else int(ms)
-        hardware = int(b.get("hardware") or 0)
-        pdf = int(b.get("pdf") or 0)
-        pct = round(100.0 * models / ncat) if ncat else 0
+    for brand in WANTED_BRANDS:
+        ncat = int(cat.get(brand) or 0)
+        root = LIB / brand
+        hwdir = root / "Hardware"
+        pdfdir = root / "PDF"
+        png = list(hwdir.rglob("*.png")) if hwdir.exists() else []
+        pdfs = list(pdfdir.rglob("*.pdf")) if pdfdir.exists() else []
+        models = {p.parent.name for p in png}
+        hardware = len(png)
+        pdf = len(pdfs)
+        nmodels = len(models)
+        pct = round(100.0 * nmodels / ncat) if ncat else (100 if hardware else 0)
         if brand == "HUAWEI":
             state, state_ar, pct = hw["state"], hw["state_ar"], hw["pct"]
-            models = hw["models"]
+            nmodels = hw["models"]
             hardware = hw["png"]
             pdf = hw["pdf"]
             ncat = hw["catalog_models"]
-        elif brand in DONE_BRANDS or (ncat and models >= ncat):
-            state, state_ar, pct = "done", "مكتمل", 100 if models else pct
+        elif brand == running_brand:
+            state, state_ar = "run", "التحميل يعمل الآن"
+            st_path = Path(f"/tmp/{brand.lower()}_fill_state.json")
+            try:
+                stj = json.loads(st_path.read_text()) if st_path.exists() else {}
+                server = int(stj.get("server") or 0)
+                pending = stj.get("pending")
+                if server and pending is not None:
+                    pct = round(100.0 * max(0, server - int(pending)) / server, 1)
+            except Exception:
+                pass
+        elif brand in DONE_BRANDS or (ncat and nmodels >= ncat and hardware > 0):
+            state, state_ar, pct = "done", "مكتمل", 100
         elif hardware > 0:
             state, state_ar = "paused", "متوقف"
         else:
@@ -1011,7 +1038,7 @@ def monitor_payload() -> dict:
             {
                 "brand": brand,
                 "ar": BRAND_AR.get(brand, brand),
-                "models": models,
+                "models": nmodels,
                 "catalog": ncat,
                 "hardware": hardware,
                 "pdf": pdf,
@@ -1020,11 +1047,15 @@ def monitor_payload() -> dict:
                 "pct": pct,
             }
         )
-    order = {"run": 0, "wait_hop": 0, "pdf": 0, "paused": 1, "done": 2, "waiting": 3}
-    brands.sort(key=lambda x: (order.get(x["state"], 9), x["ar"]))
     total_n = len(brands) or 1
     done_n = sum(1 for b in brands if b["state"] == "done")
-    running = hw.get("fill_running")
+    pcts = [float(b["pct"] or 0) for b in brands]
+    dl_pct = round(sum(pcts) / len(pcts), 1) if pcts else 0
+    note = (
+        "المطلوب فقط: هواوي، إنفينكس، ريلمي، شاومي، آيتل، أوبو، تكنو. "
+        "لن نحمّل سامسونج أو فيفو أو أسوس أو باقي الشركات. "
+        + (f"الجاري الآن: {BRAND_AR.get(running_brand, running_brand)}. " if running_brand else "")
+    )
     return {
         "now": time.strftime("%H:%M:%S UTC", time.gmtime()),
         "drive": drive,
@@ -1032,10 +1063,10 @@ def monitor_payload() -> dict:
         "brands": brands,
         "done_brands": done_n,
         "total_brands": total_n,
-        "download_pct": hw.get("pct") or 0,
-        "download_paused": not running,
+        "download_pct": dl_pct,
+        "download_paused": running_brand is None,
         "download_ar": hw.get("state_ar") or "",
-        "download_note": hw.get("note") or "",
+        "download_note": note,
     }
 
 

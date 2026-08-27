@@ -36,7 +36,7 @@ DIAGRAM = "https://circuitbitapp.com/api_data/api_link/diagram.php"
 PLACEHOLDER_WH = (900, 400)
 MIN_REAL = 20_000
 WORKERS = int(os.environ.get("CB_WORKERS", "16") or "16")
-RETRIES = 3
+RETRIES = 8
 LIST_BATCH = int(os.environ.get("CB_LIST_BATCH", "8") or "8")
 PER_PROXY = int(os.environ.get("CB_PER_PROXY", "3") or "3")
 # Direct IP is banned; with SOCKS retry catalog quickly instead of parking 4h.
@@ -185,6 +185,10 @@ def _hop_dead_err(err: str) -> bool:
             "timed out",
             "read timed out",
             "max retries exceeded",
+            "http 403",
+            "http 429",
+            "http 502",
+            "http 503",
         )
     )
 
@@ -509,13 +513,13 @@ def list_items_retry(
     brand: str | None = None, node: str | None = None, label: str = ""
 ) -> list[dict]:
     last_err: Exception | None = None
-    for attempt in range(5):
+    for attempt in range(12):
         try:
             return list_items(brand=brand, node=node)
         except Exception as e:
             last_err = e
-            log(f"LIST retry {attempt+1}/5 {label}: {e}")
-            time.sleep(1.2 * (attempt + 1))
+            log(f"LIST retry {attempt+1}/12 {label}: {e}")
+            time.sleep(1.5 * (attempt + 1))
     raise last_err or RuntimeError(f"LIST failed {label}")
 
 
