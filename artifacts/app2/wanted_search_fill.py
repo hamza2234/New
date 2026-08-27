@@ -51,7 +51,10 @@ def catalog_models() -> dict[str, list[str]]:
         b = str(row.get("brand") or "").upper()
         if b in out:
             out[b].append(str(row.get("model") or "").strip())
-    # Black Shark serve_image URLs 404; pull common Xiaomi lines first.
+    # Black Shark serve_image URLs 404 on every hop; skip them so Redmi/POCO get retries.
+    out["XIAOMI"] = [
+        m for m in out["XIAOMI"] if not m.upper().startswith("BLACK SHARK")
+    ]
     out["XIAOMI"].sort(
         key=lambda m: (
             0
@@ -204,34 +207,17 @@ def _rate_loop() -> None:
         prev_ok, prev_b, t0 = ok, b, time.time()
 
 
-def main() -> int:
-    dl.wait_until_tls("WANTED-SEARCH")
-    nproxy = max(1, len(dl.current_proxies()))
-    dl.WORKERS = max(32, 8 * nproxy)
-    cats = catalog_models()
-    # Round-robin so Realme/Xiaomi/Itel/Oppo/Tecno start together, not one brand first.
-    queues = [[(b, m) for m in cats[b] if m] for b in BRANDS]
-    jobs: list[tuple[str, str]] = []
-    while any(queues):
-        for q in queues:
-            if q:
-                jobs.append(q.pop(0))
-    # Equal share per brand so Xiaomi/Oppo/Tecno are not starved by Realme skips.
-    per = max(2, min(6, max(2, nproxy // len(BRANDS))))
-    dl.log(
-        f"LIGHTNING fill brands={BRANDS} models={len(jobs)} hops={nproxy} "
-        f"per_brand={per}"
-    )
-    write_state(
-        {
-            "phase": "download",
-            "models": {b: len(cats[b]) for b in BRANDS},
-            "hops": nproxy,
-            "per_brand": per,
-        }
-    )
-    threading.Thread(target=_rate_loop, name="rate", daemon=True).start()
+def _clear_stale_fill_state() -> None:
+    """Monitor treats pending=0 as 100%. Drop leftovers while a pass is running."""
+    for brand in BRANDS:
+        path = Path(f"/tmp/{brand.lower()}_fill_state.json")
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
+
+def _run_pass(cats: dict[str, list[str]]) -> None:
     def run_brand(brand: str, models: list[str]) -> None:
         n = max(2, min(6, max(2, len(dl.current_proxies()) // len(BRANDS))))
         with ThreadPoolExecutor(max_workers=n) as ex:
@@ -246,12 +232,7 @@ def main() -> int:
         futs = [ex.submit(run_brand, b, cats[b]) for b in BRANDS]
         for fut in as_completed(futs):
             fut.result()
-    _stop.set()
     for brand in BRANDS:
-        try:
-            dl.download_pdfs_for_company(brand, PDF_NAME[brand])
-        except Exception as e:
-            dl.log(f"{brand} PDF skip {e}")
         root = LIB / brand
         r1, s1, _ = ar.rename_tree(root / "Hardware", "hardware")
         r2, s2, _ = ar.rename_tree(root / "PDF", "pdf")
@@ -260,16 +241,37 @@ def main() -> int:
             if (root / "Hardware").exists()
             else 0
         )
-        Path(f"/tmp/{brand.lower()}_fill_state.json").write_text(
-            json.dumps(
-                {"server": n, "pending": 0, "png": n, "arabic_hw": r1, "arabic_pdf": r2},
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
         dl.log(f"{brand} arabic hardware={r1}/{s1} pdf={r2}/{s2} png={n}")
-    write_state({"phase": "done"})
-    dl.log("WANTED search fill done")
+
+
+def main() -> int:
+    dl.wait_until_tls("WANTED-SEARCH")
+    threading.Thread(target=_rate_loop, name="rate", daemon=True).start()
+    pass_n = 0
+    while True:
+        pass_n += 1
+        _clear_stale_fill_state()
+        nproxy = max(1, len(dl.current_proxies()))
+        dl.WORKERS = max(32, 8 * nproxy)
+        cats = catalog_models()
+        jobs = sum(len(cats[b]) for b in BRANDS)
+        per = max(2, min(6, max(2, nproxy // len(BRANDS))))
+        dl.log(
+            f"LIGHTNING fill pass={pass_n} brands={BRANDS} models={jobs} "
+            f"hops={nproxy} per_brand={per}"
+        )
+        write_state(
+            {
+                "phase": "download",
+                "pass": pass_n,
+                "models": {b: len(cats[b]) for b in BRANDS},
+                "hops": nproxy,
+                "per_brand": per,
+            }
+        )
+        _run_pass(cats)
+        dl.log(f"WANTED search fill pass {pass_n} done — retry leftovers")
+        time.sleep(1)
     return 0
 
 

@@ -1041,7 +1041,8 @@ def monitor_payload() -> dict:
                 stj = json.loads(st_path.read_text()) if st_path.exists() else {}
                 server = int(stj.get("server") or 0)
                 pending = stj.get("pending")
-                if server and pending is not None:
+                # pending=0 leftover from a finished catalog pass is not live progress.
+                if server and pending is not None and int(pending) > 0:
                     pct = round(100.0 * max(0, server - int(pending)) / server, 1)
             except Exception:
                 pass

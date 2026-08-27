@@ -28,6 +28,9 @@ LISTS = (
     "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
     "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
     "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=5000",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
+    "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt",
+    "https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks5.txt",
 )
 IPPORT = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}$")
 
@@ -109,9 +112,9 @@ def cycle() -> int:
     fresh = fetch_lists()
     log(f"lists={len(fresh)} known={len(known)}")
     # Probe known first, then a slice of new candidates.
-    cands = list(dict.fromkeys([*known, *fresh]))[:400]
+    cands = list(dict.fromkeys([*known, *fresh]))[:1000]
     ok: list[str] = []
-    with ThreadPoolExecutor(max_workers=64) as ex:
+    with ThreadPoolExecutor(max_workers=80) as ex:
         futs = [ex.submit(probe, p) for p in cands]
         for fut in as_completed(futs):
             p, good = fut.result()

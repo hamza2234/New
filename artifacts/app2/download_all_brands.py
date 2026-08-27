@@ -416,9 +416,14 @@ def http_get_fast(url: str, timeout: int = 40) -> bytes:
                 timeout=(4, max(12, timeout)),
                 stream=True,
             )
-            if r.status_code in (403, 404):
+            if r.status_code == 403:
                 q.put(s)
-                raise RuntimeError(f"http {r.status_code} {url[:80]}")
+                raise RuntimeError(f"http 403 {url[:80]}")
+            if r.status_code == 404:
+                last = RuntimeError(f"http 404 {url[:80]}")
+                q.put(s)
+                time.sleep(0.05 * (attempt + 1))
+                continue
             if r.status_code != 200:
                 raise RuntimeError(f"http {r.status_code} {url[:80]}")
             body = _read_stall(r, min_bps=20_000, window=8.0)
@@ -429,7 +434,7 @@ def http_get_fast(url: str, timeout: int = 40) -> bytes:
         except Exception as e:
             last = e
             msg = str(e)
-            if "http 403" in msg or "http 404" in msg:
+            if "http 403" in msg:
                 raise
             proxy = getattr(s, "_cb_proxy", None)
             try:
