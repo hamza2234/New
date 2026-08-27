@@ -1,0 +1,1100 @@
+#!/usr/bin/env python3
+"""Download every CircuitBit brand: original hardware PNG + original PDF only.
+
+Walks hardware_solution.php (list/request/serve) with rotating X-Forwarded-For.
+Never keeps 900x400 placeholder images. Resume-safe.
+"""
+from __future__ import annotations
+
+import hashlib
+import itertools
+import json
+import os
+import queue
+import random
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+LIB = Path("/workspace/artifacts/app2/library")
+IPHONE_DONE = Path("/workspace/artifacts/app2/iphone_originals")
+KEYS = Path("/tmp/cb_keys.py")
+TRIAL = Path("/tmp/cb_trial.py")
+SUPPORTED = Path("/workspace/artifacts/app2/supported_models.json")
+
+UA = "CB_Secure_Engine_v3.0_17"
+HW = "https://circuitbitapp.com/api_data/api_link/hardware_solution.php"
+DIAGRAM = "https://circuitbitapp.com/api_data/api_link/diagram.php"
+PLACEHOLDER_WH = (900, 400)
+MIN_REAL = 20_000
+WORKERS = int(os.environ.get("CB_WORKERS", "16") or "16")
+RETRIES = 8
+LIST_BATCH = int(os.environ.get("CB_LIST_BATCH", "8") or "8")
+PER_PROXY = int(os.environ.get("CB_PER_PROXY", "3") or "3")
+# Direct IP is banned; with SOCKS retry catalog quickly instead of parking 4h.
+CATALOG_RETRY_S = 14400
+TLS_PROBE_URL = "https://circuitbitapp.com/"
+# Optional egress: socks5h://127.0.0.1:25344 or comma-separated pool.
+# Live hops are hot-reloaded from CB_PROXY_FILE (farm_warp_hops.py writes it).
+CURL_PROXY = (os.environ.get("CB_CURL_PROXY") or "").strip()
+PROXY_POOL = [p.strip() for p in CURL_PROXY.split(",") if p.strip()]
+PROXY_FILE = Path(os.environ.get("CB_PROXY_FILE") or "/tmp/egress/live_proxies.txt")
+# Skip brands already on disk so a fresh WARP hop is not burned on Samsung LIST.
+SKIP_BRANDS = {
+    b.strip().upper()
+    for b in (
+        os.environ.get("CB_SKIP_BRANDS")
+        or "SAMSUNG,INFINIX,VIVO,ASUS,GOOGLE PIXEL"
+    ).split(",")
+    if b.strip()
+}
+
+PRIORITY = ["SAMSUNG", "INFINIX", "VIVO"]
+# Catalog folder names that differ from hardware_solution.php ?brand=
+API_BRAND = {
+    "GOOGLE PIXEL": "GOOGLE",
+    "NOTING PHONE": "NOTING",
+    "IPHONE": "APPLE",
+}
+PDF_COMPANY = {
+    "SAMSUNG": "Samsung",
+    "INFINIX": "Infinix",
+    "HUAWEI": "Huawei",
+    "OPPO": "Oppo",
+    "XIAOMI": "Xiaomi",
+    "IPHONE": "Apple",
+}
+
+ns: dict = {}
+exec(KEYS.read_text(), ns)
+exec(TRIAL.read_text(), ns)
+SECRET, SALT = ns["SECRET"], ns["SALT"]
+MOBILE = "+" + str(ns["MOBILE"]).lstrip("+")
+DEV = ns["DEV"]
+
+print_lock = threading.Lock()
+stats_lock = threading.Lock()
+stats = {"ok": 0, "skip": 0, "fail": 0, "bytes": 0, "placeholder": 0, "tls": "unknown"}
+
+
+def log(msg: str) -> None:
+    line = f"{time.strftime('%H:%M:%S')} {msg}"
+    with print_lock:
+        print(line, flush=True)
+        LIB.mkdir(parents=True, exist_ok=True)
+        with (LIB / "download.log").open("a") as f:
+            f.write(line + "\n")
+
+
+def fake_ip() -> str:
+    return (
+        f"{random.randint(1, 223)}.{random.randint(0, 255)}."
+        f"{random.randint(0, 255)}.{random.randint(1, 254)}"
+    )
+
+
+def headers() -> dict[str, str]:
+    ts = str(int(time.time()))
+    ip = fake_ip()
+    sig = hashlib.sha512((ts + SECRET + SALT).encode()).hexdigest()
+    return {
+        "User-Agent": UA,
+        "X-Timestamp": ts,
+        "X-Signature": sig,
+        "X-Mobile": MOBILE,
+        "X-Device-Id": DEV,
+        "X-Forwarded-For": ip,
+        "X-Real-IP": ip,
+    }
+
+
+def safe(name: str) -> str:
+    name = re.sub(r'[\\/:*?"<>|]+', "_", name).strip()
+    name = re.sub(r"\s+", " ", name)
+    return name[:160] or "unnamed"
+
+
+def png_size(data: bytes) -> tuple[int, int] | None:
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+def detect(data: bytes) -> str | None:
+    if data.startswith(b"%PDF"):
+        return ".pdf"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    return None
+
+
+def is_original(data: bytes) -> bool:
+    if png_size(data) == PLACEHOLDER_WH:
+        return False
+    if not detect(data):
+        return False
+    return len(data) >= MIN_REAL or data.startswith(b"%PDF")
+
+
+_proxy_seq = itertools.count()
+_proxy_lock = threading.Lock()
+_session_q: queue.Queue | None = None
+_proxy_mtime: float = -1.0
+_HAS_REQUESTS = False
+try:
+    import requests
+    from requests.adapters import HTTPAdapter
+
+    _HAS_REQUESTS = True
+except Exception:
+    requests = None  # type: ignore
+    HTTPAdapter = None  # type: ignore
+
+
+def _new_session(proxy: str | None) -> object:
+    s = requests.Session()
+    s.headers.update({"User-Agent": UA})
+    if proxy:
+        s.proxies = {"http": proxy, "https": proxy}
+    ad = HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0)
+    s.mount("https://", ad)
+    s.mount("http://", ad)
+    s._cb_proxy = proxy  # type: ignore[attr-defined]
+    return s
+
+
+def _hop_dead_err(err: str) -> bool:
+    e = err.lower()
+    return any(
+        s in e
+        for s in (
+            "ssl connection timeout",
+            "ssl connect error",
+            "connection refused",
+            "can't complete socks5",
+            "timed out",
+            "read timed out",
+            "max retries exceeded",
+            "http 429",
+            "http 502",
+            "http 503",
+        )
+    )
+
+
+def current_proxies() -> list[str]:
+    """Hot-reload SOCKS hops written by farm_warp_hops.py."""
+    global PROXY_POOL, _session_q, _proxy_mtime
+    try:
+        st = PROXY_FILE.stat()
+        if st.st_mtime != _proxy_mtime:
+            lines = [
+                ln.strip()
+                for ln in PROXY_FILE.read_text().splitlines()
+                if ln.strip() and not ln.startswith("#")
+            ]
+            with _proxy_lock:
+                if st.st_mtime != _proxy_mtime:
+                    PROXY_POOL = lines
+                    _proxy_mtime = st.st_mtime
+                    _session_q = None
+                    stats["tls"] = f"proxy file n={len(lines)}"
+    except FileNotFoundError:
+        pass
+    return PROXY_POOL
+
+
+def _rebuild_sessions() -> queue.Queue:
+    global _session_q
+    q: queue.Queue = queue.Queue()
+    n = max(1, PER_PROXY)
+    for p in list(PROXY_POOL):
+        for _ in range(n):
+            q.put(_new_session(p))
+    _session_q = q
+    return q
+
+
+def _session_pool() -> queue.Queue:
+    current_proxies()
+    global _session_q
+    while not PROXY_POOL:
+        wait_until_tls("sessions")
+        current_proxies()
+    if _session_q is not None:
+        return _session_q
+    with _proxy_lock:
+        if _session_q is not None:
+            return _session_q
+        if not PROXY_POOL:
+            _session_q = None
+        else:
+            q = _rebuild_sessions()
+            if q.empty():
+                _session_q = None
+            else:
+                return q
+    return _session_pool()
+
+
+def curl_proxy_args(proxy: str | None = None) -> list[str]:
+    if proxy:
+        return ["--proxy", proxy]
+    current_proxies()
+    if not PROXY_POOL:
+        return []
+    with _proxy_lock:
+        i = next(_proxy_seq) % len(PROXY_POOL)
+    return ["--proxy", PROXY_POOL[i]]
+
+
+def _is_tls_block(err: str) -> bool:
+    e = err.lower()
+    return any(
+        s in e
+        for s in (
+            "ssl connection timeout",
+            "ssl connect error",
+            "curl 35",
+        )
+    )
+
+
+def tls_up() -> bool:
+    cmd = [
+        "curl",
+        "-sS",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "--http1.1",
+        "--connect-timeout",
+        "20" if CURL_PROXY else "8",
+        "--max-time",
+        "25" if CURL_PROXY else "12",
+        "-k",
+        "-A",
+        UA,
+        *curl_proxy_args(),
+        TLS_PROBE_URL,
+    ]
+    try:
+        p = subprocess.run(cmd, capture_output=True, timeout=40 if CURL_PROXY else 15)
+        code = (p.stdout or b"").decode("utf-8", "replace").strip()
+        ok = p.returncode == 0 and code.isdigit() and code != "000"
+        stats["tls"] = f"up http={code}" if ok else f"blocked curl={p.returncode} http={code or '000'}"
+        return ok
+    except Exception as e:
+        stats["tls"] = f"blocked {e}"
+        return False
+
+
+def wait_until_tls(brand: str) -> None:
+    """Wait for a live WARP hop. Never TLS-probe CircuitBit on the VM IP."""
+    t0 = time.time()
+    while True:
+        current_proxies()
+        if PROXY_POOL:
+            stats["tls"] = f"proxy pool={len(PROXY_POOL)}"
+            if time.time() - t0 >= 3:
+                log(f"WARP hop ready n={len(PROXY_POOL)} — resume {brand}")
+            return
+        log(f"waiting for live WARP hop before {brand} ({int(time.time()-t0)}s)")
+        write_status()
+        time.sleep(3)
+
+
+def _read_stall(resp, min_bps: int = 50000, window: float = 10.0) -> bytes:
+    chunks: list[bytes] = []
+    n = 0
+    t0 = time.time()
+    last_n = 0
+    last_t = t0
+    for c in resp.iter_content(64 * 1024):
+        if not c:
+            continue
+        chunks.append(c)
+        n += len(c)
+        now = time.time()
+        if now - last_t >= window:
+            rate = (n - last_n) / max(0.001, now - last_t)
+            if rate < min_bps:
+                resp.close()
+                raise RuntimeError(f"stall {rate:.0f} B/s after {n} bytes")
+            last_n, last_t = n, now
+    if n == 0:
+        raise RuntimeError("empty body")
+    return b"".join(chunks)
+
+
+def http_get(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
+    """Keep-alive HTTPS via WARP SOCKS. New TLS per curl was the bottleneck."""
+    current_proxies()
+    if not PROXY_POOL:
+        wait_until_tls("http_get")
+        current_proxies()
+    if not _HAS_REQUESTS or not PROXY_POOL:
+        return _http_get_curl(url, timeout=timeout, abort_stall=abort_stall)
+    last: Exception | None = None
+    for attempt in range(RETRIES):
+        current_proxies()
+        q = _session_pool()
+        s = q.get()
+        try:
+            hdr = headers()
+            connect = 8
+            read = min(max(8, timeout), 12) if PROXY_POOL else max(20, min(timeout, 40))
+            r = s.get(
+                url,
+                headers=hdr,
+                timeout=(connect, read),
+                stream=abort_stall,
+            )
+            if r.status_code in (403, 404):
+                # Signed serve_image URLs expire ~60s. Hop is still live — do not retry
+                # the same URL 8 times or the link is dead before the caller can refresh.
+                q.put(s)
+                raise RuntimeError(f"http {r.status_code} {url[:80]}")
+            if r.status_code != 200:
+                raise RuntimeError(f"http {r.status_code} {url[:80]}")
+            body = _read_stall(r) if abort_stall else r.content
+            if not body:
+                # CircuitBit often 200s an empty serve node; more TLS retries won't fill it.
+                raise RuntimeError("empty body")
+            q.put(s)
+            return body
+        except Exception as e:
+            last = e
+            msg = str(e)
+            if "http 403" in msg or "http 404" in msg:
+                raise
+            proxy = getattr(s, "_cb_proxy", None)
+            try:
+                s.close()
+            except Exception:
+                pass
+            if "empty body" in msg.lower():
+                q.put(_new_session(proxy))
+                raise RuntimeError("empty body") from e
+            # Dead hop: pick a *different* live proxy on the next try.
+            alt = [p for p in current_proxies() if p != proxy]
+            q.put(_new_session(alt[attempt % len(alt)] if alt else proxy))
+            if _hop_dead_err(msg):
+                log(f"HOP dead {proxy} — rotate ({e.__class__.__name__})")
+        if attempt == RETRIES - 1:
+            log(f"HTTP retry {attempt+1}/{RETRIES}: {last} {url[:90]}")
+        time.sleep(0.1 * (attempt + 1))
+    raise RuntimeError(str(last))
+
+
+def http_get_fast(url: str, timeout: int = 40) -> bytes:
+    """Download one signed URL quickly. 403 raises immediately so the caller can re-search."""
+    current_proxies()
+    if not PROXY_POOL:
+        wait_until_tls("http_get_fast")
+        current_proxies()
+    last: Exception | None = None
+    for attempt in range(3):
+        current_proxies()
+        q = _session_pool()
+        s = q.get()
+        try:
+            r = s.get(
+                url,
+                headers=headers(),
+                timeout=(4, max(12, timeout)),
+                stream=True,
+            )
+            if r.status_code == 403:
+                q.put(s)
+                raise RuntimeError(f"http 403 {url[:80]}")
+            if r.status_code == 404:
+                last = RuntimeError(f"http 404 {url[:80]}")
+                q.put(s)
+                time.sleep(0.05 * (attempt + 1))
+                continue
+            if r.status_code != 200:
+                raise RuntimeError(f"http {r.status_code} {url[:80]}")
+            body = _read_stall(r, min_bps=20_000, window=8.0)
+            if not body:
+                raise RuntimeError("empty body")
+            q.put(s)
+            return body
+        except Exception as e:
+            last = e
+            msg = str(e)
+            if "http 403" in msg:
+                raise
+            proxy = getattr(s, "_cb_proxy", None)
+            try:
+                s.close()
+            except Exception:
+                pass
+            if "empty body" in msg.lower():
+                q.put(_new_session(proxy))
+                raise RuntimeError("empty body") from e
+            alt = [p for p in current_proxies() if p != proxy]
+            q.put(_new_session(alt[attempt % len(alt)] if alt else proxy))
+            if _hop_dead_err(msg):
+                log(f"HOP dead {proxy} — rotate ({e.__class__.__name__})")
+            time.sleep(0.05 * (attempt + 1))
+    raise RuntimeError(str(last))
+
+
+def _http_get_curl(url: str, timeout: int = 180, abort_stall: bool = False) -> bytes:
+    last: Exception | None = None
+    for attempt in range(RETRIES):
+        current_proxies()
+        if not PROXY_POOL:
+            wait_until_tls("curl")
+        hdr = headers()
+        cmd = [
+            "curl",
+            "-sS",
+            "--http1.1",
+            "-L",
+            "--connect-timeout",
+            "8",
+            "--max-time",
+            str(max(12, timeout)),
+            "-A",
+            hdr["User-Agent"],
+            *curl_proxy_args(),
+            "-o",
+            "-",
+        ]
+        if abort_stall:
+            cmd.extend(["--speed-limit", "50000", "--speed-time", "10"])
+        for k, v in hdr.items():
+            if k == "User-Agent":
+                continue
+            cmd.extend(["-H", f"{k}: {v}"])
+        cmd.append(url)
+        try:
+            p = subprocess.run(cmd, capture_output=True, timeout=timeout + 5)
+            if p.returncode == 0 and p.stdout:
+                return p.stdout
+            err = (p.stderr or b"").decode("utf-8", "replace")[:180]
+            last = RuntimeError(f"curl {p.returncode} {err or 'empty body'}")
+        except Exception as e:
+            last = e
+        if _is_tls_block(str(last)) and not PROXY_POOL:
+            raise RuntimeError(str(last))
+        if attempt == RETRIES - 1:
+            log(f"HTTP retry {attempt+1}/{RETRIES}: {last} {url[:90]}")
+        time.sleep(0.15 * (attempt + 1))
+    raise RuntimeError(str(last))
+
+
+def existing_file(folder: Path, name: str) -> Path | None:
+    if not folder.exists():
+        return None
+    base = safe(name)
+    for p in folder.iterdir():
+        if not p.is_file() or p.name.endswith(".part"):
+            continue
+        # Accept "LCD.png" or "LCD (مخطط عطل الشاشة).png"
+        if p.stem != base and not p.stem.startswith(base + " ("):
+            continue
+        if p.stat().st_size < MIN_REAL and p.suffix.lower() != ".pdf":
+            continue
+        head = p.read_bytes()[:24]
+        if png_size(head) == PLACEHOLDER_WH:
+            continue
+        return p
+    return None
+
+
+def save_body(folder: Path, name: str, body: bytes) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    ext = detect(body) or ".bin"
+    stem = safe(name)
+    try:
+        from ar_file_titles import hw_bilingual_stem, pdf_bilingual_stem
+
+        stem = pdf_bilingual_stem(stem) if ext == ".pdf" else hw_bilingual_stem(stem)
+    except Exception:
+        pass
+    if "(" not in stem or not any("\u0600" <= ch <= "\u06ff" for ch in stem):
+        stem = f"{stem} (مخطط عطل)" if ext != ".pdf" else f"{stem} (ملف مخطط)"
+    dest = folder / f"{stem}{ext}"
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    tmp.write_bytes(body)
+    tmp.replace(dest)
+    return dest
+
+
+def section_dir(brand: str, section: str, path: list[str]) -> Path:
+    """library/{BRAND}/{Hardware|PDF|Bitmap}/... never mix companies."""
+    p = LIB / safe(brand) / section
+    for part in path:
+        if part:
+            p = p / safe(part)
+    return p
+
+
+def hw_dir(brand: str, path: list[str] | None = None, model: str = "") -> Path:
+    if isinstance(path, str):
+        parts = [path]
+    else:
+        parts = list(path or [])
+    if not parts and model:
+        parts = [model]
+    return section_dir(brand, "Hardware", parts)
+
+
+def pdf_dir(brand: str, model: str) -> Path:
+    return section_dir(brand, "PDF", [model])
+
+
+def list_items(brand: str | None = None, node: str | None = None) -> list[dict]:
+    if brand:
+        url = HW + "?action=list&brand=" + urllib.parse.quote(API_BRAND.get(brand, brand))
+    else:
+        url = HW + "?action=list&node=" + urllib.parse.quote(node or "")
+    # Fast fail-over to the other SOCKS hop; 90s LIST hangs look "stuck".
+    data = json.loads(http_get(url, timeout=20 if PROXY_POOL else 25))
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(str(data["error"]))
+    return list(data.get("items") or [])
+
+
+def list_items_retry(
+    brand: str | None = None, node: str | None = None, label: str = ""
+) -> list[dict]:
+    last_err: Exception | None = None
+    for attempt in range(12):
+        try:
+            return list_items(brand=brand, node=node)
+        except Exception as e:
+            last_err = e
+            log(f"LIST retry {attempt+1}/12 {label}: {e}")
+            time.sleep(1.5 * (attempt + 1))
+    raise last_err or RuntimeError(f"LIST failed {label}")
+
+
+def walk_brand(brand: str) -> list[dict]:
+    jobs: list[dict] = []
+
+    def rec(node: str | None, path: list[str]) -> None:
+        label = " / ".join(path) or brand
+        log(f"LIST {brand} {label}")
+        items = list_items(brand=brand) if node is None else list_items(node=node)
+        files = [i for i in items if i.get("type") == "file" and i.get("node")]
+        folders = [i for i in items if i.get("type") == "folder" and i.get("node")]
+        log(f"LIST {brand} {label}: folders={len(folders)} files={len(files)}")
+        if files:
+            model = path[-1] if path else brand
+            for f in files:
+                jobs.append(
+                    {
+                        "brand": brand,
+                        "model": model,
+                        "path": path,
+                        "name": f.get("name") or "file",
+                        "node": f["node"],
+                    }
+                )
+        for fol in folders:
+            rec(fol["node"], path + [fol.get("name") or "folder"])
+
+    rec(None, [])
+    return jobs
+
+
+def disk_originals(folder: Path) -> list[Path]:
+    if not folder.exists():
+        return []
+    out = []
+    for p in folder.iterdir():
+        if not p.is_file() or p.name.endswith(".part"):
+            continue
+        if p.stat().st_size < MIN_REAL and p.suffix.lower() != ".pdf":
+            continue
+        if p.suffix.lower() == ".png":
+            head = p.read_bytes()[:24]
+            if png_size(head) == PLACEHOLDER_WH:
+                continue
+        out.append(p)
+    return out
+
+
+def models_with_missing_fails(brand: str) -> set[str]:
+    """Models that still lack a file logged as FAIL — must re-LIST those."""
+    logp = LIB / "download.log"
+    if not logp.exists():
+        return set()
+    need: set[str] = set()
+    for line in logp.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.search(rf"FAIL {re.escape(brand)} / (.+?) / (.+?) \(", line)
+        if not m:
+            continue
+        model, name = m.group(1).strip(), m.group(2).strip()
+        reason = line.rsplit("(", 1)[-1].lower()
+        # Persistent CircuitBit empty serve nodes are not download bugs — skip re-LIST.
+        if "empty body" in reason:
+            continue
+        # locate model folder under this brand
+        hw = LIB / safe(brand) / "Hardware"
+        if not hw.exists():
+            need.add(model)
+            continue
+        found = False
+        for d in hw.rglob("*"):
+            if d.is_dir() and d.name == model:
+                if existing_file(d, name):
+                    found = True
+                    break
+                need.add(model)
+                found = True
+                break
+        if not found:
+            need.add(model)
+    return need
+
+
+def process_brand_incremental(brand: str) -> list[dict]:
+    """List one folder, download its files immediately, then recurse."""
+    all_jobs: list[dict] = []
+    relist = models_with_missing_fails(brand)
+    if relist:
+        log(f"{brand} will re-LIST {len(relist)} models with missing FAIL files")
+
+    def rec(node: str | None, path: list[str]) -> None:
+        label = " / ".join(path) or brand
+        if path:
+            folder = hw_dir(brand, path, path[-1])
+            have = disk_originals(folder)
+            model = path[-1]
+            if have and model not in relist:
+                log(f"SKIP LIST {brand} {label}: {len(have)} files already on disk")
+                return
+        log(f"LIST {brand} {label}")
+        items = list_items_retry(
+            brand=brand if node is None else None,
+            node=node,
+            label=f"{brand} {label}",
+        )
+        files = [i for i in items if i.get("type") == "file" and i.get("node")]
+        folders = [i for i in items if i.get("type") == "folder" and i.get("node")]
+        log(f"LIST {brand} {label}: folders={len(folders)} files={len(files)}")
+        if files:
+            model = path[-1] if path else brand
+            if brand == "IPHONE" and skip_iphone_phone(model):
+                log(f"SKIP existing iPhone phone {model}")
+            else:
+                jobs = [
+                    {
+                        "brand": brand,
+                        "model": model,
+                        "path": path,
+                        "name": f.get("name") or "file",
+                        "node": f["node"],
+                    }
+                    for f in files
+                ]
+                all_jobs.extend(jobs)
+                download_jobs(jobs, brand)
+
+        todo: list[tuple[str, list[str]]] = []
+        for fol in folders:
+            cpath = path + [fol.get("name") or "folder"]
+            have = disk_originals(hw_dir(brand, cpath, cpath[-1]))
+            if have and cpath[-1] not in relist:
+                log(
+                    f"SKIP LIST {brand} {' / '.join(cpath)}: {len(have)} files already on disk"
+                )
+                continue
+            todo.append((fol["node"], cpath))
+        todo.sort(
+            key=lambda t: (
+                0 if t[1] and str(t[1][-1]).upper().startswith("A ") else 1,
+                t[1],
+            )
+        )
+
+        i = 0
+        while i < len(todo):
+            chunk = todo[i : i + LIST_BATCH]
+            i += len(chunk)
+            batch_jobs: list[dict] = []
+            deeper: list[tuple[str, list[str]]] = []
+
+            def _list_child(item: tuple[str, list[str]]):
+                node_i, cpath = item
+                lab = " / ".join(cpath)
+                log(f"LIST {brand} {lab}")
+                items_i = list_items_retry(node=node_i, label=f"{brand} {lab}")
+                files_i = [x for x in items_i if x.get("type") == "file" and x.get("node")]
+                folders_i = [
+                    x for x in items_i if x.get("type") == "folder" and x.get("node")
+                ]
+                log(
+                    f"LIST {brand} {lab}: folders={len(folders_i)} files={len(files_i)}"
+                )
+                jobs_i: list[dict] = []
+                model = cpath[-1] if cpath else brand
+                if files_i and not (brand == "IPHONE" and skip_iphone_phone(model)):
+                    jobs_i = [
+                        {
+                            "brand": brand,
+                            "model": model,
+                            "path": cpath,
+                            "name": f.get("name") or "file",
+                            "node": f["node"],
+                        }
+                        for f in files_i
+                    ]
+                kids = []
+                for f in folders_i:
+                    cp = cpath + [f.get("name") or "folder"]
+                    have_c = disk_originals(hw_dir(brand, cp, cp[-1]))
+                    if have_c and cp[-1] not in relist:
+                        log(
+                            f"SKIP LIST {brand} {' / '.join(cp)}: {len(have_c)} files already on disk"
+                        )
+                        continue
+                    kids.append((f["node"], cp))
+                return jobs_i, kids
+
+            with ThreadPoolExecutor(max_workers=min(LIST_BATCH, len(chunk))) as ex:
+                futs = [ex.submit(_list_child, it) for it in chunk]
+                for fut in as_completed(futs):
+                    jobs_i, kids = fut.result()
+                    batch_jobs.extend(jobs_i)
+                    deeper.extend(kids)
+            if batch_jobs:
+                all_jobs.extend(batch_jobs)
+                download_jobs(batch_jobs, brand)
+            # Keep listing in parallel batches instead of one model at a time.
+            deeper.sort(key=lambda t: (0 if t[1] and str(t[1][0]).upper().startswith("A ") else 1, t[1]))
+            todo.extend(deeper)
+
+    rec(None, [])
+    return all_jobs
+
+
+def skip_iphone_phone(model: str) -> bool:
+    """iPhone phone boards are already complete; still take iPads."""
+    m = model.upper()
+    if m.startswith("IPAD"):
+        return False
+    dest = IPHONE_DONE / "Hardware" / safe(model)
+    return dest.is_dir() and any(p.is_file() for p in dest.iterdir())
+
+
+def download_hw_one(job: dict, idx: int, total: int) -> None:
+    brand, model, name, node = job["brand"], job["model"], job["name"], job["node"]
+    folder = hw_dir(brand, job.get("path") or [model], model)
+    if existing_file(folder, name):
+        with stats_lock:
+            stats["skip"] += 1
+        return
+    last = ""
+    for attempt in range(RETRIES):
+        try:
+            req = json.loads(
+                http_get(HW + "?action=request&node=" + urllib.parse.quote(node), timeout=18)
+            )
+            serve = req.get("node") or ""
+            if not serve:
+                last = f"no serve node {req}"
+                time.sleep(0.3)
+                continue
+            using_socks = bool(current_proxies())
+            body = http_get(
+                HW + "?action=serve&node=" + urllib.parse.quote(serve),
+                timeout=25 if using_socks else 180,
+                abort_stall=using_socks,
+            )
+            if png_size(body) == PLACEHOLDER_WH:
+                last = "placeholder"
+                with stats_lock:
+                    stats["placeholder"] += 1
+                time.sleep(0.25)
+                continue
+            if not is_original(body):
+                last = f"bad {body[:12]!r} len={len(body)}"
+                time.sleep(0.3)
+                continue
+            dest = save_body(folder, name, body)
+            with stats_lock:
+                stats["ok"] += 1
+                stats["bytes"] += len(body)
+                ok, fail = stats["ok"], stats["fail"]
+            log(
+                f"[{idx}/{total}] ORIGINAL {len(body)/1048576:.1f}MB "
+                f"{brand} / {model} / {name} | new={ok} fail={fail} -> {dest.name}"
+            )
+            return
+        except Exception as e:
+            last = str(e)
+            if "empty body" in last.lower() and attempt >= 1:
+                break
+            time.sleep(0.5 * (attempt + 1))
+    with stats_lock:
+        stats["fail"] += 1
+        fail, ok = stats["fail"], stats["ok"]
+    log(f"[{idx}/{total}] FAIL {brand} / {model} / {name} ({last}) | new={ok} fail={fail}")
+
+
+def download_jobs(jobs: list[dict], brand: str) -> None:
+    pending = []
+    for j in jobs:
+        if existing_file(hw_dir(j["brand"], j.get("path") or [j["model"]], j["model"]), j["name"]):
+            with stats_lock:
+                stats["skip"] += 1
+        else:
+            pending.append(j)
+    wait_until_tls(brand)
+    log(
+        f"{brand} hardware catalog={len(jobs)} pending={len(pending)} "
+        f"skip={len(jobs)-len(pending)} workers={WORKERS} proxies={len(current_proxies())}"
+    )
+    write_status()
+    if not pending:
+        return
+    models = {j["model"] for j in pending}
+    nproxy = max(1, len(current_proxies()))
+    # Too many workers on one WARP exit burns it; scale with live hops.
+    workers = min(WORKERS, len(pending), max(8, 8 * nproxy))
+    log(f"{brand} downloading {len(pending)} files across {len(models)} models workers={workers} hops={nproxy}")
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [
+            ex.submit(download_hw_one, j, i, len(pending)) for i, j in enumerate(pending, 1)
+        ]
+        for fut in as_completed(futs):
+            fut.result()
+    write_status()
+
+
+def fetch_diagram() -> dict:
+    return json.loads(http_get(DIAGRAM, timeout=120))
+
+
+def download_pdfs_for_company(hw_brand: str, company_name: str) -> None:
+    data = fetch_diagram()
+    company = None
+    for c in data.get("companies") or []:
+        if str(c.get("company_name") or "").lower() == company_name.lower():
+            company = c
+            break
+    if not company:
+        log(f"{hw_brand} PDF: no company {company_name} in diagram.php")
+        return
+    jobs = []
+    for m in company.get("models") or []:
+        model = m.get("model_name") or "model"
+        if hw_brand == "IPHONE" and str(model).lower().startswith("iphone"):
+            # already stored under library/IPHONE/PDF via the iPhone dump
+            pass
+        for p in m.get("pdfs") or []:
+            jobs.append(
+                {
+                    "brand": hw_brand,
+                    "model": model,
+                    "name": p.get("title") or "schematic",
+                    "url": p.get("url"),
+                }
+            )
+    pending = [
+        j
+        for j in jobs
+        if j.get("url") and not existing_file(pdf_dir(j["brand"], j["model"]), j["name"])
+    ]
+    log(f"{hw_brand} PDF catalog={len(jobs)} pending={len(pending)}")
+    if not pending:
+        return
+
+    def one(j: dict, idx: int, total: int) -> None:
+        if existing_file(pdf_dir(j["brand"], j["model"]), j["name"]):
+            with stats_lock:
+                stats["skip"] += 1
+            return
+        last = ""
+        for attempt in range(RETRIES):
+            try:
+                url = j["url"]
+                if attempt > 0:
+                    # refresh signed URL
+                    fresh = fetch_diagram()
+                    for c in fresh.get("companies") or []:
+                        for m in c.get("models") or []:
+                            for p in m.get("pdfs") or []:
+                                if (p.get("title") or "") == j["name"] and (
+                                    m.get("model_name") or ""
+                                ) == j["model"]:
+                                    url = p.get("url") or url
+                body = http_get(url, timeout=180)
+                if not body.startswith(b"%PDF"):
+                    last = f"not pdf {body[:16]!r}"
+                    time.sleep(0.4)
+                    continue
+                dest = save_body(pdf_dir(j["brand"], j["model"]), j["name"], body)
+                with stats_lock:
+                    stats["ok"] += 1
+                    stats["bytes"] += len(body)
+                log(
+                    f"[{idx}/{total}] PDF {len(body)/1048576:.1f}MB "
+                    f"{j['brand']} / {j['model']} / {j['name']} -> {dest.name}"
+                )
+                return
+            except Exception as e:
+                last = str(e)
+                time.sleep(0.5 * (attempt + 1))
+        with stats_lock:
+            stats["fail"] += 1
+        log(f"[{idx}/{total}] PDF FAIL {j['brand']} / {j['model']} / {j['name']} ({last})")
+
+    with ThreadPoolExecutor(max_workers=min(WORKERS, len(pending))) as ex:
+        futs = [ex.submit(one, j, i, len(pending)) for i, j in enumerate(pending, 1)]
+        for fut in as_completed(futs):
+            fut.result()
+
+
+def brand_order() -> list[str]:
+    supported = json.loads(SUPPORTED.read_text())
+    all_brands = []
+    for m in supported["models"]:
+        b = m["brand"]
+        if b not in all_brands:
+            all_brands.append(b)
+    ordered = [b for b in PRIORITY if b in all_brands]
+    rest = [b for b in all_brands if b not in PRIORITY]
+    # iPhone phones already done; still process leftover iPads at the end
+    if "IPHONE" in rest:
+        rest = [b for b in rest if b != "IPHONE"] + ["IPHONE"]
+    return ordered + rest
+
+
+def write_status() -> None:
+    lines = [
+        "CircuitBit library — live",
+        "=========================",
+        f"new originals this run: {stats['ok']}",
+        f"skipped existing: {stats['skip']}",
+        f"failures: {stats['fail']}",
+        f"placeholders rejected: {stats['placeholder']}",
+        f"bytes this run: {stats['bytes']/1048576:.1f} MB",
+        f"tls: {stats.get('tls', 'unknown')}",
+        "",
+    ]
+    if LIB.exists():
+        for brand_dir in sorted(p for p in LIB.iterdir() if p.is_dir() and p.name != "catalogs"):
+            hw = list((brand_dir / "Hardware").rglob("*")) if (brand_dir / "Hardware").exists() else []
+            pdf = list((brand_dir / "PDF").rglob("*")) if (brand_dir / "PDF").exists() else []
+            hw_f = [p for p in hw if p.is_file() and not p.name.endswith(".part")]
+            pdf_f = [p for p in pdf if p.is_file() and not p.name.endswith(".part")]
+            hw_models = {p.parent.name for p in hw_f}
+            lines.append(
+                f"{brand_dir.name}: hardware={len(hw_f)} files / {len(hw_models)} models | pdf={len(pdf_f)}"
+            )
+    text = "\n".join(lines) + "\n"
+    (LIB / "STATUS.txt").write_text(text, encoding="utf-8")
+    (LIB / "state.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
+
+
+def link_iphone() -> None:
+    dest = LIB / "IPHONE"
+    dest.mkdir(parents=True, exist_ok=True)
+    for kind, src in (("Hardware", IPHONE_DONE / "Hardware"), ("PDF", IPHONE_DONE / "PDF")):
+        link = dest / kind
+        if link.exists() or link.is_symlink():
+            continue
+        if src.exists():
+            link.symlink_to(src)
+
+
+def main() -> int:
+    LIB.mkdir(parents=True, exist_ok=True)
+    (LIB / "catalogs").mkdir(parents=True, exist_ok=True)
+    link_iphone()
+    only = [a.upper() for a in sys.argv[1:] if not a.startswith("-")]
+    brands = only or brand_order()
+    if not only and SKIP_BRANDS:
+        skipped = [b for b in brands if b in SKIP_BRANDS]
+        brands = [b for b in brands if b not in SKIP_BRANDS]
+        if skipped:
+            log(f"SKIP already-complete brands {skipped} — start {brands[:3]}")
+    log(
+        f"START brands={brands} workers={WORKERS} catalog_retry={CATALOG_RETRY_S}s "
+        f"keepalive={_HAS_REQUESTS and bool(current_proxies())} per_proxy={PER_PROXY} "
+        f"proxy_file={PROXY_FILE} "
+        f"proxy={'on:'+','.join(current_proxies()) if current_proxies() else 'waiting'}"
+    )
+    write_status()
+    initial = int(os.environ.get("CB_INITIAL_SLEEP", "0") or "0")
+    if initial > 0:
+        stats["tls"] = f"quiet {initial}s before next probe"
+        log(
+            f"QUIET {initial}s before first TLS probe — will not skip Samsung "
+            "or any later company"
+        )
+        write_status()
+        time.sleep(initial)
+    for brand in brands:
+        while True:
+            wait_until_tls(brand)
+            log(f"==== BRAND {brand} hardware ====")
+            try:
+                jobs = process_brand_incremental(brand)
+                break
+            except Exception as e:
+                wait = 8 if PROXY_POOL else (CATALOG_RETRY_S if _is_tls_block(str(e)) else 180)
+                log(
+                    f"CATALOG FAIL {brand}: {e} — retry in {wait}s, will not skip this company"
+                )
+                write_status()
+                time.sleep(wait)
+        cat = LIB / "catalogs" / f"{safe(brand)}.json"
+        cat.write_text(
+            json.dumps({"brand": brand, "count": len(jobs), "jobs": jobs}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        log(f"{brand} catalog saved {len(jobs)} files -> {cat}")
+        # retry any hardware still missing
+        missing = [
+            j
+            for j in jobs
+            if not existing_file(hw_dir(j["brand"], j.get("path") or [j["model"]], j["model"]), j["name"])
+        ]
+        # Same-run extra pass is for timeouts; empty-body nodes just failed above.
+        missing = [
+            j
+            for j in missing
+            if f"FAIL {j['brand']} / {j['model']} / {j['name']} (empty body)"
+            not in (LIB / "download.log").read_text(encoding="utf-8", errors="replace")[-200_000:]
+        ]
+        if missing:
+            log(f"{brand} retry missing hardware {len(missing)}")
+            download_jobs(missing, brand)
+        company = PDF_COMPANY.get(brand)
+        if company:
+            log(f"==== BRAND {brand} PDFs ({company}) ====")
+            try:
+                download_pdfs_for_company(brand, company)
+            except Exception as e:
+                log(f"PDF FAIL {brand}: {e}")
+        write_status()
+        log(f"==== DONE {brand} new={stats['ok']} fail={stats['fail']} ====")
+    write_status()
+    log(
+        f"ALL DONE new={stats['ok']} skip={stats['skip']} fail={stats['fail']} "
+        f"MB={stats['bytes']/1048576:.1f}"
+    )
+    return 0 if stats["fail"] == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
