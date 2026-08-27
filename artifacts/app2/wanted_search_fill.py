@@ -107,6 +107,7 @@ def download_file(brand: str, model: str, name: str, url: str) -> str:
 
 
 def process_model(brand: str, model: str, idx: int, total: int) -> tuple[int, int]:
+    dl.log(f"[{idx}/{total}] START {brand}/{model}")
     folder = dl.hw_dir(brand, [model], model)
     sols = search_model(brand, model)
     if not sols:
@@ -176,7 +177,7 @@ def main() -> int:
             "hops": nproxy,
         }
     )
-    workers = min(16, max(8, 2 * nproxy), len(jobs))
+    workers = min(10, max(5, nproxy), len(jobs))
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [
             ex.submit(process_model, b, m, i, len(jobs))
