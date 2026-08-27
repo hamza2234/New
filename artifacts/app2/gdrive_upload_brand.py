@@ -18,7 +18,6 @@ import ar_file_titles as ar
 
 LIB = Path("/workspace/artifacts/app2/library")
 REMOTE = "gdrive_user"
-FORBIDDEN = {"gdrive"}
 
 
 def _run(cmd: list[str], log: Path | None = None) -> int:
@@ -97,8 +96,11 @@ def upload_brand(brand: str, remote_name: str | None = None) -> int:
         if not src.exists():
             continue
         dest = f"{REMOTE}:{remote_name}/{section}"
-        if any(x in dest for x in FORBIDDEN) or dest.startswith("gdrive:"):
-            raise SystemExit("REFUSE: service-account remote is forbidden")
+        remote_id = dest.split(":", 1)[0]
+        if remote_id != "gdrive_user":
+            raise SystemExit(
+                f"REFUSE: only gdrive_user is allowed, got {remote_id!r}"
+            )
         rc = _run(
             [
                 "rclone",
